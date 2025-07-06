@@ -1,0 +1,60 @@
+# Core TTS and Audio
+TTS==0.22.0
+sounddevice
+soundfile
+librosa
+numpy
+scipy
+
+# GUI Framework
+tkinter
+
+# Audio Processing
+torch
+torchaudio
+
+# Text Processing and NLP
+transformers
+nltk
+pysbd
+inflect
+num2words
+unidecode
+anyascii
+
+# Language Support
+jieba
+pypinyin
+bangla
+bnnumerizer
+bnunicodenormalizer
+hangul_romanize
+jamo
+g2pkk
+gruut
+
+# Machine Learning and Data
+scikit-learn
+pandas
+matplotlib
+tqdm
+umap-learn
+
+# Utilities
+aiohttp
+fsspec
+pyyaml
+packaging
+numba
+einops
+encodec
+coqpit
+cython
+
+# Web and API
+flask
+spacy
+requests
+
+# Development and Packaging
+pyinstaller 
