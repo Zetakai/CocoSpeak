@@ -10,6 +10,8 @@ import threading
 from TTS.utils.manage import ModelManager
 import itertools
 from TTS.utils.synthesizer import Synthesizer  # Always import at top level
+import collections
+import keyboard
 
 # Check Python version
 if sys.version_info < (3, 6):
@@ -540,13 +542,15 @@ def save_wav(wav, sample_rate, file_path):
 
 class TTSApp:
     def __init__(self, root):
+        self.hotkey = 'ctrl+alt+t'
+        self.hotkey_var = tk.StringVar(value=self.hotkey)
         self.root = root
         self.root.title("CocoSpeak TTS App")
         self.sample_rate = 22050
         self.wav = None
         self.synth = None
         self.loading_anim = None
-        self._speaking = False  # Initialize speaking flag
+        self._speaking = False
         self._loading_model = False
         self._loading_running = False
         self.loading_label = tk.Label(root, text="", fg="blue")
@@ -640,6 +644,10 @@ class TTSApp:
         )
         self.import_custom_button.pack(side=tk.LEFT, padx=10)
 
+        # Move Set Hotkey button here
+        self.hotkey_btn = tk.Button(self.cuda_frame, text=f"Set Hotkey ({self.hotkey})", command=self.set_hotkey)
+        self.hotkey_btn.pack(side=tk.LEFT, padx=10)
+
         # Speaker Selection Frame (for multi-speaker models)
         self.speaker_frame = tk.Frame(root)
         self.speaker_frame.pack(pady=5)
@@ -660,11 +668,30 @@ class TTSApp:
         # Hide speaker selection initially
         self.speaker_frame.pack_forget()
 
-        # Text Input Frame
-        self.text_label = tk.Label(root, text="Enter text:")
-        self.text_label.pack()
-        self.text_entry = tk.Text(root, height=5, width=50)
-        self.text_entry.pack()
+        # --- Text entry and queue side by side ---
+        self.text_and_queue_frame = tk.Frame(root)
+        self.text_and_queue_frame.pack(pady=5, anchor='center', side='top')
+        # Text entry on the left
+        text_entry_frame = tk.Frame(self.text_and_queue_frame)
+        text_entry_frame.pack(side=tk.LEFT, anchor='n')  # flex-start
+        self.text_label = tk.Label(text_entry_frame, text="Enter text:")
+        self.text_label.pack(anchor='w')
+        self.text_entry = tk.Text(text_entry_frame, height=5, width=50)
+        self.text_entry.pack(anchor='w')
+        self.text_entry.bind('<Return>', lambda event: self.queue_speak())
+        # Queue on the right
+        queue_frame = tk.Frame(self.text_and_queue_frame)
+        queue_frame.pack(side=tk.LEFT, padx=10, anchor='n')  # flex-start
+        tk.Label(queue_frame, text="TTS Queue:").pack(anchor='w')
+        self.queue_listbox = tk.Listbox(queue_frame, width=40, height=5)
+        self.queue_listbox.pack(anchor='w')
+        # Queue control buttons below the listbox
+        queue_btn_frame = tk.Frame(queue_frame)
+        queue_btn_frame.pack(pady=2, anchor='w')
+        self.remove_queue_btn = tk.Button(queue_btn_frame, text="Remove Selected", command=self.remove_selected_from_queue)
+        self.remove_queue_btn.pack(side=tk.LEFT, padx=2)
+        self.clear_queue_btn = tk.Button(queue_btn_frame, text="Clear All", command=self.clear_queue)
+        self.clear_queue_btn.pack(side=tk.LEFT, padx=2)
 
         # Control Buttons Frame
         self.button_frame = tk.Frame(root)
@@ -673,7 +700,7 @@ class TTSApp:
         self.speak_button = tk.Button(
             self.button_frame, 
             text="Speak", 
-            command=self.speak,
+            command=self.queue_speak,
             state=tk.DISABLED
         )
         self.speak_button.pack(side=tk.LEFT, padx=5)
@@ -700,6 +727,66 @@ class TTSApp:
         )
         phonemizer_dropdown.pack(side=tk.LEFT, padx=5)
         phonemizer_dropdown.bind("<<ComboboxSelected>>", self.on_phonemizer_change)
+
+        self.tts_queue = collections.deque()
+        self.is_minimized = False
+        self._hotkey_handler = None  # Track the current hotkey handler
+        # Center the text and queue horizontally
+        self.text_and_queue_frame = tk.Frame(root)
+        self.text_and_queue_frame.pack(pady=5, anchor='center', side='top')
+        threading.Thread(target=self._start_hotkey_listener, daemon=True).start()
+        # Set focus to text entry on startup
+        self.root.after(100, self.focus_text_entry)
+
+    def _toggle_window(self):
+        if self.is_minimized:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes('-topmost', True)
+            self.root.after(100, lambda: self.root.attributes('-topmost', False))
+            self.is_minimized = False
+            try:
+                import platform
+                if platform.system() == 'Windows':
+                    import ctypes
+                    user32 = ctypes.windll.user32
+                    hwnd = int(self.root.frame(), 16) if hasattr(self.root, 'frame') else self.root.winfo_id()
+                    user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+            self.root.focus_force()
+            self.focus_text_entry()
+        else:
+            self.root.iconify()
+            self.is_minimized = True
+
+    def set_hotkey(self):
+        import tkinter.simpledialog as simpledialog
+        new_hotkey = simpledialog.askstring("Set Hotkey", "Enter new hotkey (e.g. ctrl+alt+h):", initialvalue=self.hotkey)
+        if new_hotkey:
+            self.hotkey = new_hotkey
+            self.hotkey_var.set(self.hotkey)
+            self.hotkey_btn.config(text=f"Set Hotkey ({self.hotkey})")
+            if self._hotkey_handler is not None:
+                try:
+                    import keyboard
+                    keyboard.remove_hotkey(self._hotkey_handler)
+                except Exception:
+                    pass
+            threading.Thread(target=self._start_hotkey_listener, daemon=True).start()
+
+    def _start_hotkey_listener(self):
+        import keyboard
+        if self._hotkey_handler is not None:
+            try:
+                keyboard.remove_hotkey(self._hotkey_handler)
+            except Exception:
+                pass
+        self._hotkey_handler = keyboard.add_hotkey(self.hotkey, lambda: self.root.after(0, self._toggle_window))
+        keyboard.wait()
+
+    def focus_text_entry(self):
+        self.text_entry.focus_set()
 
     def refresh_models(self):
         """Refresh the model list"""
@@ -746,12 +833,9 @@ class TTSApp:
             messagebox.showinfo("Refresh Complete", f"No models found.\n\nPlease add models to:\n{models_dir}")
 
     def on_model_change(self, event=None):
-        """Handle model selection change"""
         self.current_model = self.model_var.get()
         if self.current_model in self.model_configs:
             self.desc_label.config(text=self.model_configs[self.current_model]["description"])
-            
-            # Show/hide speaker selection based on model type
             if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
                 self.speaker_combo['values'] = VCTK_SPEAKERS
                 self.speaker_var.set(VCTK_SPEAKERS[0])
@@ -759,13 +843,14 @@ class TTSApp:
                 self.speaker_label.config(text="Speaker:")
             else:
                 self.speaker_frame.pack_forget()
-        
         # Reset model when changing selection
         if self.synth is not None:
             self.synth = None
             self.status_label.config(text="Model not loaded")
             self.speak_button.config(state=tk.DISABLED)
             self.save_button.config(state=tk.DISABLED)
+        # Immediately load the model
+        self.load_model()
 
     def on_cuda_change(self):
         # Reset model when CUDA setting changes
@@ -774,6 +859,8 @@ class TTSApp:
             self.status_label.config(text="Model not loaded")
             self.speak_button.config(state=tk.DISABLED)
             self.save_button.config(state=tk.DISABLED)
+        # Immediately load the model
+        self.load_model()
 
     def download_model(self):
         """Open download script"""
@@ -1364,24 +1451,42 @@ class TTSApp:
         self.loading_label.config(text="")
         self.loading_anim = None
 
-    def speak(self):
+    def update_queue_listbox(self):
+        self.queue_listbox.delete(0, tk.END)
+        for item in self.tts_queue:
+            self.queue_listbox.insert(tk.END, item[:60] + ("..." if len(item) > 60 else ""))
+
+    def queue_speak(self):
+        text = self.text_entry.get("1.0", tk.END).strip()
+        if not text:
+            return
+        self.tts_queue.append(text)
+        self.text_entry.delete("1.0", tk.END)
+        self.update_queue_listbox()
+        self.process_queue()
+
+    def process_queue(self):
+        self.update_queue_listbox()
+        if self._speaking or not self.tts_queue:
+            return
+        text = self.tts_queue.popleft()
+        self.update_queue_listbox()
+        self.speak(text)
+
+    def speak(self, text=None):
         if self.synth is None:
             messagebox.showwarning("Model not loaded", "Please load the model first.")
             return
-        text = self.text_entry.get("1.0", tk.END).strip()
-        if not text:
-            messagebox.showwarning("Input required", "Please enter some text.")
-            return
-        
-        # Prevent multiple simultaneous synthesis
-        if hasattr(self, '_speaking') and self._speaking:
-            messagebox.showwarning("Already speaking", "Please wait for the current synthesis to finish.")
-            return
-        
+        if text is None:
+            text = self.text_entry.get("1.0", tk.END).strip()
+            if not text:
+                messagebox.showwarning("Input required", "Please enter some text.")
+                return
+        if self._speaking:
+            return  # Don't show alert, just skip
         def do_speak():
             try:
                 self._speaking = True
-                # Disable all buttons during synthesis with grey styling
                 self.root.after(0, lambda: self.speak_button.config(
                     state=tk.DISABLED, 
                     bg='#e0e0e0', 
@@ -1394,27 +1499,17 @@ class TTSApp:
                 ))
                 self.root.after(0, lambda: self.start_loading("Synthesizing"))
                 self.root.after(0, lambda: self.status_label.config(text="Synthesizing speech..."))
-                
                 if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
                     speaker_name = self.speaker_var.get()
-                    print(f"Using multi-speaker model with speaker: {speaker_name}")
                     self.wav = tts_to_wav_vctk(self.synth, text, speaker_name)
                 else:
-                    print(f"Using single-speaker model")
                     self.wav = tts_to_wav(self.synth, text)
-                
-                # Update status for playback
                 self.root.after(0, lambda: self.start_loading("Playing audio..."))
                 self.root.after(0, lambda: self.status_label.config(text="Playing audio..."))
-                
-                # Play audio
                 play_audio(self.wav, self.sample_rate)
-                
-                # Re-enable buttons after completion
                 self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.status_label.config(text=f"{self.current_model} ready"))
-                
             except Exception as e:
                 error_msg = f"Failed to synthesize speech: {e}\n\nModel: {self.current_model}\nText: {text}"
                 if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
@@ -1423,7 +1518,7 @@ class TTSApp:
             finally:
                 self._speaking = False
                 self.root.after(0, lambda: self.stop_loading())
-        
+                self.root.after(0, self.process_queue)
         import threading
         threading.Thread(target=do_speak, daemon=True).start()
 
@@ -1532,6 +1627,19 @@ class TTSApp:
                         
                 except Exception as e:
                     print(f"Warning: Could not update config file: {e}")
+
+    def remove_selected_from_queue(self):
+        sel = self.queue_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        # Remove from deque by index
+        self.tts_queue = collections.deque([item for i, item in enumerate(self.tts_queue) if i != idx])
+        self.update_queue_listbox()
+
+    def clear_queue(self):
+        self.tts_queue.clear()
+        self.update_queue_listbox()
 
 if __name__ == "__main__":
     root = tk.Tk()
