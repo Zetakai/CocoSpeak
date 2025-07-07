@@ -15,7 +15,7 @@ ENV/
 # PyInstaller
 build/
 dist/
-*.spec
+# *.spec
 
 # OS files
 .DS_Store

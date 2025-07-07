@@ -46,6 +46,14 @@ if hasattr(sys, '_MEIPASS'):
 else:
     BASE_PATH = os.path.abspath('.')
 
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath('.')
+    return os.path.join(base_path, relative_path)
+
 def get_models_directory():
     """Get the correct models directory path for both Python and EXE modes"""
     if getattr(sys, 'frozen', False):

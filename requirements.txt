@@ -39,7 +39,7 @@ gruut_lang_de==2.0.1
 gruut_lang_en==2.0.1
 gruut_lang_es==2.0.1
 gruut_lang_fr==2.0.2
-espeak-ng
+# espeak-ng
 
 # Machine Learning and Data
 scikit-learn
@@ -65,4 +65,7 @@ spacy
 requests
 
 # Development and Packaging
-pyinstaller 
+pyinstaller
+
+# Additional dependencies
+keyboard 
