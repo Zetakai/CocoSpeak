@@ -7,11 +7,11 @@ numpy
 scipy
 
 # GUI Framework
-tkinter
+# tkinter (removed)
 
 # Audio Processing
-torch
-torchaudio
+torch==2.5.0+cu121
+torchaudio==2.5.0+cu121
 
 # Text Processing and NLP
 transformers
@@ -31,7 +31,15 @@ bnunicodenormalizer
 hangul_romanize
 jamo
 g2pkk
-gruut
+
+# Phonemizers
+gruut==2.2.3
+gruut-ipa==0.13.0
+gruut_lang_de==2.0.1
+gruut_lang_en==2.0.1
+gruut_lang_es==2.0.1
+gruut_lang_fr==2.0.2
+espeak-ng
 
 # Machine Learning and Data
 scikit-learn

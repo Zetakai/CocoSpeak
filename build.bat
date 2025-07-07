@@ -11,13 +11,17 @@ REM Build the exe
 echo Building with PyInstaller...
 pyinstaller cocospeak.spec
 
+REM Create empty models folder outside the exe directory
+echo Creating empty models folder...
+if not exist "dist\cocospeak\models" mkdir "dist\cocospeak\models"
+
 REM Check if build was successful
 if exist "dist\cocospeak\cocospeak.exe" (
     echo.
     echo Build successful!
     echo Executable created at: dist\cocospeak\cocospeak.exe
     echo.
-    echo To distribute, send the entire 'dist\cocospeak' folder.
+    echo To distribute, send the entire 'dist' folder.
     echo.
     pause
 ) else (

@@ -22,6 +22,12 @@ if sys.version_info < (3, 6):
 os.environ["TTS_BACKEND"] = "gruut"
 os.environ["GRUUT_LANG"] = "en"
 
+# Debug environment variables
+print(f"DEBUG: TTS_BACKEND = {os.environ.get('TTS_BACKEND', 'Not set')}")
+print(f"DEBUG: GRUUT_LANG = {os.environ.get('GRUUT_LANG', 'Not set')}")
+print(f"DEBUG: Running as EXE = {getattr(sys, 'frozen', False)}")
+print(f"DEBUG: sys._MEIPASS = {getattr(sys, '_MEIPASS', 'Not set')}")
+
 # Import TTS with proper error handling
 try:
     from TTS.utils.synthesizer import Synthesizer
@@ -164,21 +170,23 @@ def fix_phonemizer_config(config_path):
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         
+        # DISABLED: Let users choose their own phonemizer
         # Check if phonemizer is set to espeak but we're using gruut
-        if config.get("phonemizer") == "espeak":
-            print(f"⚠️  Model {os.path.basename(config_path)} uses 'espeak' phonemizer, switching to 'gruut'")
-            config["phonemizer"] = "gruut"
-            
-            # Also update phoneme_language if needed
-            if config.get("phoneme_language") == "en":
-                config["phoneme_language"] = "en-us"
-            
-            # Write the updated config back
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=4, ensure_ascii=False)
-            
-            print(f"✓ Updated phonemizer configuration in {config_path}")
-            return True
+        # if config.get("phonemizer") == "espeak":
+        #     print(f"⚠️  Model {os.path.basename(config_path)} uses 'espeak' phonemizer, switching to 'gruut'")
+        #     config["phonemizer"] = "gruut"
+        #     
+        #     # Also update phoneme_language if needed
+        #     if config.get("phoneme_language") == "en":
+        #         config["phoneme_language"] = "en-us"
+        #     
+        #     # Write the updated config back
+        #     with open(config_path, 'w', encoding='utf-8') as f:
+        #         json.dump(config, f, indent=4, ensure_ascii=False)
+        #     
+        #     print(f"✓ Updated phonemizer configuration in {config_path}")
+        #     return True
+        return False
     except Exception as e:
         print(f"Warning: Could not fix phonemizer config for {config_path}: {e}")
         return False
@@ -266,52 +274,135 @@ VCTK_SPEAKER_MAP = {
 VCTK_SPEAKERS = list(VCTK_SPEAKER_MAP.keys())
 
 # --- TTS Functions ---
+def debug_audio_info(wav, stage=""):
+    """Debug function to print audio information"""
+    try:
+        print(f"DEBUG {stage}:")
+        print(f"  Shape: {wav.shape}")
+        print(f"  Data type: {wav.dtype}")
+        print(f"  Min value: {np.min(wav)}")
+        print(f"  Max value: {np.max(wav)}")
+        print(f"  Mean value: {np.mean(wav)}")
+        print(f"  Has NaN: {np.isnan(wav).any()}")
+        print(f"  Has Inf: {np.isinf(wav).any()}")
+        print(f"  Non-zero samples: {np.count_nonzero(wav)}")
+        print(f"  Total samples: {len(wav)}")
+    except Exception as e:
+        print(f"DEBUG {stage}: Error getting audio info: {e}")
+
 def tts_to_wav(synth, text):
     if synth is None:
         raise Exception("Model not loaded. Please load the model first.")
-    wav = synth.tts(text)
-    wav = np.array(wav)
     
-    # Improve audio clarity
+    try:
+        print(f"Starting TTS synthesis for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        print(f"Text length: {len(text)} characters")
+        print(f"Running as EXE: {getattr(sys, 'frozen', False)}")
+        
+        # Try with different synthesis parameters for better quality
+        try:
+            # First try with default parameters
+            wav = synth.tts(text)
+            print("TTS synthesis completed successfully with default parameters")
+        except Exception as e1:
+            print(f"Default synthesis failed: {e1}")
+            try:
+                # Try with explicit parameters for better quality
+                wav = synth.tts(text, speaker=None, language=None)
+                print("TTS synthesis completed successfully with explicit parameters")
+            except Exception as e2:
+                print(f"Explicit synthesis failed: {e2}")
+                # Fallback to original
+                wav = synth.tts(text)
+                print("TTS synthesis completed successfully with fallback")
+        
+        import numpy as np
+        # Robust handling of wav output
+        if isinstance(wav, list):
+            if all(isinstance(x, (float, int, np.floating, np.integer)) for x in wav):
+                print(f"TTS output is a list of {len(wav)} floats/ints. Converting to numpy array...")
+                wav = np.array(wav, dtype=np.float32)
+            elif all(hasattr(x, '__len__') for x in wav):
+                print(f"TTS output is a list with {len(wav)} segments. Concatenating...")
+                wav = np.concatenate([np.asarray(seg, dtype=np.float32) for seg in wav if seg is not None and len(seg) > 0])
+            else:
+                print(f"TTS output is a list of unknown type. Attempting to convert to numpy array...")
+                wav = np.array(wav, dtype=np.float32)
+        elif not isinstance(wav, np.ndarray):
+            print(f"TTS output is type {type(wav)}. Attempting to convert to numpy array...")
+            wav = np.array(wav, dtype=np.float32)
+        
+        # Check if wav is too short (less than 2 seconds for any text)
+        if len(wav) < 44100:  # Less than 2 seconds at 22050Hz
+            print(f"WARNING: Audio is very short ({len(wav)} samples). This might indicate an issue in the exe.")
+            print(f"Expected minimum: 44100 samples for 2 seconds")
+        
+        # Add a small silence buffer to ensure the sentence completes properly
+        buffer_samples = int(22050 * 0.5)  # 0.5 seconds of silence
+        silence_buffer = np.zeros(buffer_samples, dtype=wav.dtype)
+        wav = np.concatenate([wav, silence_buffer])
+        print(f"Added {buffer_samples} samples of silence buffer")
+        
+    except Exception as e:
+        print(f"TTS synthesis failed: {e}")
+        raise Exception(f"TTS synthesis failed: {e}")
+    
+    try:
+        wav = np.array(wav)
+        print(f"Converted to numpy array: {wav.shape}")
+    except Exception as e:
+        print(f"Failed to convert to numpy array: {e}")
+        raise Exception(f"Failed to convert audio to numpy array: {e}")
+    
+    # Debug audio info
+    debug_audio_info(wav, "After TTS synthesis")
+    
+    # Enhanced audio processing for better clarity
     wav = improve_audio_clarity(wav)
+    
+    # Debug audio info after processing
+    debug_audio_info(wav, "After audio processing")
     
     return wav
 
 def improve_audio_clarity(wav):
-    """Improve audio clarity by normalizing and filtering"""
+    """Improve audio clarity with enhanced processing"""
     try:
-        # Normalize audio to prevent clipping
-        wav = wav / np.max(np.abs(wav)) * 0.95
+        # Ensure audio is float32
+        wav = wav.astype(np.float32)
         
-        # Apply a gentle high-pass filter to reduce low-frequency noise
-        from scipy import signal
+        # Remove DC offset (mean centering)
+        wav = wav - np.mean(wav)
         
-        # Design a high-pass filter to remove low-frequency noise
-        nyquist = 22050 / 2
-        cutoff = 80  # Hz - removes very low frequency noise
-        b, a = signal.butter(4, cutoff / nyquist, btype='high')
-        wav = signal.filtfilt(b, a, wav)
+        # Apply gentle compression to reduce dynamic range
+        # This helps with clarity in the exe version
+        threshold = 0.3
+        ratio = 4.0
+        wav_abs = np.abs(wav)
+        mask = wav_abs > threshold
+        wav[mask] = np.sign(wav[mask]) * (threshold + (wav_abs[mask] - threshold) / ratio)
         
-        # Apply a gentle low-pass filter to reduce high-frequency artifacts
-        cutoff_high = 8000  # Hz - removes very high frequency noise
-        b, a = signal.butter(4, cutoff_high / nyquist, btype='low')
-        wav = signal.filtfilt(b, a, wav)
+        # Normalize to prevent clipping while maintaining good levels
+        max_val = np.max(np.abs(wav))
+        if max_val > 0:
+            # Use a higher target level for better clarity
+            wav = wav / max_val * 0.85
         
-        # Normalize again after filtering
-        wav = wav / np.max(np.abs(wav)) * 0.95
+        # Apply a gentle high-pass filter effect (simple approach)
+        # This helps reduce low-frequency noise that can make speech unclear
+        if len(wav) > 1000:  # Only for longer audio
+            # Simple high-pass approximation
+            wav = wav - np.convolve(wav, np.ones(50)/50, mode='same')
+        
+        # Ensure values are in valid range
+        wav = np.clip(wav, -1.0, 1.0)
         
         return wav
         
-    except ImportError:
-        print("Warning: scipy not available, using original audio")
-        return wav
     except Exception as e:
         print(f"Warning: Audio clarity improvement failed: {e}")
+        # Return original audio if processing fails
         return wav
-
-
-
-
 
 def tts_to_wav_multi_speaker(synth, text, speaker_id):
     """Synthesize speech for multi-speaker models"""
@@ -364,6 +455,9 @@ def tts_to_wav_vctk(synth, text, speaker_name):
 
 def play_audio(wav, sample_rate=22050):
     try:
+        # Debug audio info before playback
+        debug_audio_info(wav, "Before playback")
+        
         # Stop any currently playing audio first
         sd.stop()
         # Small delay to ensure previous audio is fully stopped
@@ -372,10 +466,45 @@ def play_audio(wav, sample_rate=22050):
         
         # Ensure audio is in the correct format and range
         wav = np.asarray(wav, dtype=np.float32)
+        
+        # Validate audio data
+        if np.isnan(wav).any() or np.isinf(wav).any():
+            print("Warning: Audio contains NaN or Inf values, attempting to fix...")
+            wav = np.nan_to_num(wav, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Ensure audio is in valid range
         wav = np.clip(wav, -1.0, 1.0)
         
-        # Play new audio with better settings
-        sd.play(wav, samplerate=sample_rate, blocking=True)
+        # Check if audio is not silent
+        if np.max(np.abs(wav)) < 0.001:
+            print("Warning: Audio appears to be silent")
+            return
+        
+        print(f"Playing audio: {len(wav)} samples at {sample_rate} Hz")
+        
+        # Try sounddevice first
+        try:
+            sd.play(wav, samplerate=sample_rate, blocking=True)
+        except Exception as sd_error:
+            print(f"Sounddevice playback failed: {sd_error}")
+            # Fallback: try saving and playing with system default
+            try:
+                import tempfile
+                import os
+                temp_file = os.path.join(tempfile.gettempdir(), "cocospeak_temp.wav")
+                save_wav(wav, sample_rate, temp_file)
+                print(f"Saved temporary file: {temp_file}")
+                # Try to play with system default player
+                import subprocess
+                import platform
+                if platform.system() == "Windows":
+                    os.startfile(temp_file)
+                else:
+                    subprocess.run(["xdg-open", temp_file])
+                print("Playing with system default player")
+            except Exception as fallback_error:
+                print(f"Fallback playback also failed: {fallback_error}")
+                raise fallback_error
         
     except Exception as e:
         print(f"Audio playback error: {e}")
@@ -390,8 +519,12 @@ def save_wav(wav, sample_rate, file_path):
     try:
         from scipy.io.wavfile import write
         # Ensure wav is in the correct format
-        if wav.dtype != np.float32 and wav.dtype != np.float64:
-            wav = wav.astype(np.float32)
+        wav = np.asarray(wav, dtype=np.float32)
+        
+        # Validate audio data
+        if np.isnan(wav).any() or np.isinf(wav).any():
+            print("Warning: Audio contains NaN or Inf values, attempting to fix...")
+            wav = np.nan_to_num(wav, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # Normalize and convert to int16
         wav_normalized = np.clip(wav, -1.0, 1.0)
@@ -533,8 +666,6 @@ class TTSApp:
         self.text_entry = tk.Text(root, height=5, width=50)
         self.text_entry.pack()
 
-
-
         # Control Buttons Frame
         self.button_frame = tk.Frame(root)
         self.button_frame.pack(pady=5)
@@ -555,7 +686,20 @@ class TTSApp:
         )
         self.save_button.pack(side=tk.LEFT, padx=5)
 
-
+        # Phonemizer selection
+        self.phonemizer_var = tk.StringVar(value="gruut")
+        phonemizer_frame = tk.Frame(root)
+        phonemizer_frame.pack(pady=5)
+        tk.Label(phonemizer_frame, text="Phonemizer:").pack(side=tk.LEFT)
+        phonemizer_dropdown = ttk.Combobox(
+            phonemizer_frame,
+            textvariable=self.phonemizer_var,
+            values=["gruut", "espeak"],
+            state="readonly",
+            width=10
+        )
+        phonemizer_dropdown.pack(side=tk.LEFT, padx=5)
+        phonemizer_dropdown.bind("<<ComboboxSelected>>", self.on_phonemizer_change)
 
     def refresh_models(self):
         """Refresh the model list"""
@@ -1091,22 +1235,76 @@ class TTSApp:
                 use_cuda = self.cuda_var.get()
                 model_config = self.model_configs[self.current_model]
                 
+                print(f"Loading model: {self.current_model}")
+                print(f"Model path: {model_config['model_path']}")
+                print(f"Config path: {model_config['config_path']}")
+                print(f"CUDA enabled: {use_cuda}")
+                print(f"Running as EXE: {getattr(sys, 'frozen', False)}")
+                
                 # Thread-safe GUI updates
                 self.root.after(0, lambda: self.status_label.config(text=f"Loading {self.current_model}..."))
                 self.root.after(0, lambda: self.start_loading("Loading model"))
                 
                 # Check if files exist
+                print(f"Checking model files:")
+                print(f"  - Model file exists: {os.path.exists(model_config['model_path'])}")
+                print(f"  - Config file exists: {os.path.exists(model_config['config_path'])}")
+                
                 if not os.path.exists(model_config["model_path"]):
                     raise FileNotFoundError(f"Model file not found: {model_config['model_path']}\nPlease download the model first.")
                 if not os.path.exists(model_config["config_path"]):
                     raise FileNotFoundError(f"Config file not found: {model_config['config_path']}\nPlease download the model first.")
                 
+                # Check file sizes
+                try:
+                    model_size = os.path.getsize(model_config["model_path"]) / (1024*1024)
+                    config_size = os.path.getsize(model_config["config_path"]) / 1024
+                    print(f"  - Model file size: {model_size:.1f} MB")
+                    print(f"  - Config file size: {config_size:.1f} KB")
+                except Exception as size_e:
+                    print(f"  - Could not get file sizes: {size_e}")
+                
                 # Load model with proper configuration
+                print(f"Loading synthesizer with:")
+                print(f"  - Model: {model_config['model_path']}")
+                print(f"  - Config: {model_config['config_path']}")
+                print(f"  - CUDA: {use_cuda}")
+                
+                # Read and display config info
+                try:
+                    with open(model_config["config_path"], 'r', encoding='utf-8') as f:
+                        config_data = json.load(f)
+                    print(f"  - Model type: {config_data.get('model', 'Unknown')}")
+                    print(f"  - Phonemizer: {config_data.get('phonemizer', 'Unknown')}")
+                    print(f"  - Phoneme language: {config_data.get('phoneme_language', 'Unknown')}")
+                except Exception as config_e:
+                    print(f"  - Could not read config details: {config_e}")
+                
                 self.synth = Synthesizer(
                     tts_checkpoint=model_config["model_path"],
                     tts_config_path=model_config["config_path"],
                     use_cuda=use_cuda
                 )
+                
+                print(f"✓ Synthesizer created successfully")
+                
+                # Test synthesis with a short text
+                try:
+                    test_wav = self.synth.tts("Test")
+                    print(f"✓ Test synthesis successful: {len(test_wav)} samples")
+                    if len(test_wav) < 44100:  # Less than 2 seconds
+                        print(f"⚠️  WARNING: Test synthesis produced very short audio ({len(test_wav)} samples)")
+                    
+                    # Check if the test audio makes sense (not just noise)
+                    test_audio_mean = np.mean(np.abs(test_wav))
+                    print(f"Test audio mean amplitude: {test_audio_mean}")
+                    if test_audio_mean < 0.01:
+                        print(f"⚠️  WARNING: Test audio seems too quiet, might be noise")
+                    elif test_audio_mean > 0.5:
+                        print(f"⚠️  WARNING: Test audio seems too loud, might be distorted")
+                    
+                except Exception as test_e:
+                    print(f"⚠️  Test synthesis failed: {test_e}")
                 
                 # Thread-safe success updates
                 self.root.after(0, lambda: self.status_label.config(text=f"{self.current_model} loaded ({'CUDA' if use_cuda else 'CPU'})"))
@@ -1165,8 +1363,6 @@ class TTSApp:
         self._loading_running = False
         self.loading_label.config(text="")
         self.loading_anim = None
-
-
 
     def speak(self):
         if self.synth is None:
@@ -1304,7 +1500,38 @@ class TTSApp:
         except Exception as e:
             print(f"Warning: Error during cleanup: {e}")
 
-
+    def on_phonemizer_change(self, event=None):
+        selected = self.phonemizer_var.get()
+        os.environ["TTS_BACKEND"] = selected
+        print(f"Phonemizer set to: {selected}")
+        
+        # Update the config file if a model is loaded
+        if hasattr(self, 'current_model') and self.current_model:
+            models_dir = get_models_directory()
+            model_folder = os.path.join(models_dir, self.current_model)
+            config_file = find_config_file(model_folder, self.current_model)
+            
+            if config_file and os.path.exists(config_file):
+                try:
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    # Update the phonemizer in the config
+                    config["phonemizer"] = selected
+                    
+                    # Write the updated config back
+                    with open(config_file, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, indent=4, ensure_ascii=False)
+                    
+                    print(f"✓ Updated config file {config_file} to use {selected} phonemizer")
+                    
+                    # Reload the model to apply the new phonemizer
+                    if hasattr(self, 'synth') and self.synth is not None:
+                        print("Reloading model to apply new phonemizer...")
+                        self.load_model()
+                        
+                except Exception as e:
+                    print(f"Warning: Could not update config file: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()

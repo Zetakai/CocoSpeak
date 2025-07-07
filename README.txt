@@ -1,7 +1,64 @@
-CocoSpeak
-==========
+CocoSpeak - TTS GUI App
+=======================
 
-This app lets you use Coqui TTS models with a simple graphical interface. You can play, save, and manage multiple TTS models, including custom ones.
+CocoSpeak is a Python-based Text-to-Speech (TTS) GUI app that supports custom models, phonemizer switching (gruut/espeak), and robust PyInstaller packaging.
+
+Features:
+---------
+- Load and use custom TTS models (VITS, Tacotron, etc.)
+- Switch between gruut and espeak phonemizers from the GUI
+- Robust handling of TTS output (works with both single and multi-sentence input)
+- CUDA and CPU support
+- Modern, user-friendly interface
+- Portable EXE build with PyInstaller
+
+Setup Instructions:
+-------------------
+1. **Create and activate a virtual environment:**
+   ```
+   python -m venv venv
+   venv\Scripts\activate  # On Windows
+   ```
+2. **Install dependencies:**
+   ```
+   pip install -r requirements.txt
+   ```
+   - Make sure requirements.txt matches your venv's installed versions for best compatibility.
+
+3. **Run the app:**
+   ```
+   python cocospeak.py
+   ```
+
+4. **Build the EXE (Windows):**
+   ```
+   powershell -ExecutionPolicy Bypass -File build.ps1
+   # or
+   build.bat
+   ```
+   - Run the EXE from the command line to see debug output if you have issues.
+
+5. **Add your models:**
+   - Place your model files and config.json in the `models/` directory (or use the GUI to import).
+
+6. **Phonemizer switching:**
+   - Use the dropdown in the GUI to switch between gruut and espeak. The app will update the config and reload the model automatically.
+
+Troubleshooting:
+----------------
+- If you hear static, gibberish, or short/unclear audio in the EXE, make sure:
+  - Your requirements.txt matches your venv (especially torch, torchaudio, gruut, and language packs)
+  - The correct phonemizer is set in the config and matches what the model was trained with
+  - All model and config files are present in the EXE's models directory
+- Run the EXE from the command line to see debug output.
+
+Contributing:
+-------------
+Pull requests and issues are welcome!
+
+License:
+--------
+See LICENSE file.
 
 ---
 
