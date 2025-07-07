@@ -1,3 +1,7 @@
+# CocoSpeak requirements
+# For Windows builds: You must use the runtime hook (hook-hide_subprocess_windows.py) to suppress unwanted command prompt windows from subprocesses. See README for details.
+# PyInstaller is required for building the EXE.
+
 # Core TTS and Audio
 TTS==0.22.0
 sounddevice

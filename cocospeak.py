@@ -12,6 +12,19 @@ import itertools
 from TTS.utils.synthesizer import Synthesizer  # Always import at top level
 import collections
 import keyboard
+import platform
+import subprocess
+
+# Suppress command prompt windows from subprocesses
+if platform.system() == "Windows":
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    # Set environment variables to suppress command prompt windows
+    os.environ["PYTHONWARNINGS"] = "ignore"
+    # Try to suppress subprocess windows
+    try:
+        import subprocess
+    except:
+        pass
 
 # Check Python version
 if sys.version_info < (3, 6):
@@ -505,12 +518,12 @@ def play_audio(wav, sample_rate=22050):
                 save_wav(wav, sample_rate, temp_file)
                 print(f"Saved temporary file: {temp_file}")
                 # Try to play with system default player
-                import subprocess
-                import platform
                 if platform.system() == "Windows":
                     os.startfile(temp_file)
-                else:
-                    subprocess.run(["xdg-open", temp_file])
+                elif platform.system() == "Darwin":  # macOS
+                    subprocess.run(["open", temp_file], capture_output=True)
+                else:  # Linux
+                    subprocess.run(["xdg-open", temp_file], capture_output=True)
                 print("Playing with system default player")
             except Exception as fallback_error:
                 print(f"Fallback playback also failed: {fallback_error}")
@@ -873,9 +886,7 @@ class TTSApp:
     def download_model(self):
         """Open download script"""
         try:
-            import subprocess
-            subprocess.Popen(["python", "download_specific_model.py"])
-            messagebox.showinfo("Download", "Download script opened. Please download the model you want to use.")
+            messagebox.showinfo("Download", "Download functionality is not available in the executable version. Please use the 'Download Online Model' button instead.")
         except Exception as e:
             messagebox.showerror("Error", f"Could not open download script: {e}")
 
@@ -1375,15 +1386,27 @@ class TTSApp:
                 except Exception as config_e:
                     print(f"  - Could not read config details: {config_e}")
                 
+                print("Creating synthesizer...")
                 self.synth = Synthesizer(
                     tts_checkpoint=model_config["model_path"],
                     tts_config_path=model_config["config_path"],
                     use_cuda=use_cuda
                 )
                 
+                # Try to configure phonemizer to avoid subprocess calls
+                try:
+                    if hasattr(self.synth, 'synthesizer') and hasattr(self.synth.synthesizer, 'phonemizer'):
+                        print("Configuring phonemizer to avoid subprocess calls...")
+                        # Try to set phonemizer to use internal processing
+                        if hasattr(self.synth.synthesizer.phonemizer, 'backend'):
+                            print(f"Current phonemizer backend: {self.synth.synthesizer.phonemizer.backend}")
+                except Exception as phonemizer_e:
+                    print(f"Could not configure phonemizer: {phonemizer_e}")
+                
                 print(f"✓ Synthesizer created successfully")
                 
                 # Test synthesis with a short text
+                print("Running test synthesis...")
                 try:
                     test_wav = self.synth.tts("Test")
                     print(f"✓ Test synthesis successful: {len(test_wav)} samples")

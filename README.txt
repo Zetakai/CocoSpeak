@@ -186,3 +186,23 @@ For help or to report issues, open an issue on this GitHub repo.
 ## 🛠️ Troubleshooting
 
 - If you see an error about "phonemizer" or "use_phonemes," you may have tried to load a vocoder or an unsupported model. Only TTS models are supported. 
+
+## 🪟 Windows Build Note: Hiding Subprocess Windows
+
+To prevent unwanted command prompt windows from appearing when running the EXE on Windows, CocoSpeak uses a PyInstaller runtime hook:
+
+- **File:** `hook-hide_subprocess_windows.py`
+- **Purpose:** Patches all subprocesses to hide their windows by default on Windows.
+- **How to use:**
+  1. Ensure `hook-hide_subprocess_windows.py` is present in your project root.
+  2. In your `cocospeak.spec`, add it to the `runtime_hooks` list:
+     ```python
+     runtime_hooks=['hook-hide_subprocess_windows.py'],
+     ```
+  3. Build with PyInstaller as usual.
+
+**Troubleshooting:**
+- If you see `'STARTUPINFO' object is not callable`, make sure you have NOT assigned `subprocess.STARTUPINFO = subprocess.STARTUPINFO()` anywhere in your code. This will break all subprocess usage.
+- The runtime hook is defensive and will not patch if `STARTUPINFO` is not a class.
+
+--- 
