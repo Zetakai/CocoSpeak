@@ -270,76 +270,48 @@ def tts_to_wav(synth, text):
     if synth is None:
         raise Exception("Model not loaded. Please load the model first.")
     wav = synth.tts(text)
-    return np.array(wav)
+    wav = np.array(wav)
+    
+    # Improve audio clarity
+    wav = improve_audio_clarity(wav)
+    
+    return wav
 
-def tts_stream_synthesis(synth, text, callback=None, stop_flag=None):
-    """Stream synthesis with real-time audio playback"""
-    if synth is None:
-        raise Exception("Model not loaded. Please load the model first.")
-    
-    # For streaming, we'll use a chunked approach
-    # Split text into sentences for better streaming
-    import re
-    sentences = re.split(r'[.!?]+', text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    
-    if not sentences:
-        # If no sentences found, treat entire text as one chunk
-        sentences = [text]
-    
-    all_audio = []
-    
-    for i, sentence in enumerate(sentences):
-        if stop_flag and not stop_flag():
-            break
-            
-        if callback:
-            callback(f"Processing sentence {i+1}/{len(sentences)}: {sentence[:50]}...")
-        
-        try:
-            # Synthesize this sentence
-            sentence_audio = synth.tts(sentence)
-            sentence_audio = np.array(sentence_audio)
-            
-            # Add to total audio
-            all_audio.append(sentence_audio)
-            
-            # Play this sentence immediately
-            if callback:
-                callback(f"Playing sentence {i+1}/{len(sentences)}...")
-            
-            # Play the sentence audio
-            play_audio_chunk(sentence_audio, 22050)
-            
-        except Exception as e:
-            print(f"Error processing sentence {i+1}: {e}")
-            continue
-    
-    # Return the complete audio for saving
-    if all_audio:
-        return np.concatenate(all_audio)
-    else:
-        return np.array([])
-
-def play_audio_chunk(wav, sample_rate=22050):
-    """Play a chunk of audio without blocking"""
+def improve_audio_clarity(wav):
+    """Improve audio clarity by normalizing and filtering"""
     try:
-        # Stop any currently playing audio first
-        sd.stop()
-        # Small delay to ensure previous audio is fully stopped
-        import time
-        time.sleep(0.05)  # Shorter delay for streaming
-        # Play new audio
-        sd.play(wav, samplerate=sample_rate)
-        sd.wait()
+        # Normalize audio to prevent clipping
+        wav = wav / np.max(np.abs(wav)) * 0.95
+        
+        # Apply a gentle high-pass filter to reduce low-frequency noise
+        from scipy import signal
+        
+        # Design a high-pass filter to remove low-frequency noise
+        nyquist = 22050 / 2
+        cutoff = 80  # Hz - removes very low frequency noise
+        b, a = signal.butter(4, cutoff / nyquist, btype='high')
+        wav = signal.filtfilt(b, a, wav)
+        
+        # Apply a gentle low-pass filter to reduce high-frequency artifacts
+        cutoff_high = 8000  # Hz - removes very high frequency noise
+        b, a = signal.butter(4, cutoff_high / nyquist, btype='low')
+        wav = signal.filtfilt(b, a, wav)
+        
+        # Normalize again after filtering
+        wav = wav / np.max(np.abs(wav)) * 0.95
+        
+        return wav
+        
+    except ImportError:
+        print("Warning: scipy not available, using original audio")
+        return wav
     except Exception as e:
-        print(f"Audio chunk playback error: {e}")
-        # Try to recover by stopping and waiting
-        try:
-            sd.stop()
-            time.sleep(0.1)
-        except:
-            pass
+        print(f"Warning: Audio clarity improvement failed: {e}")
+        return wav
+
+
+
+
 
 def tts_to_wav_multi_speaker(synth, text, speaker_id):
     """Synthesize speech for multi-speaker models"""
@@ -397,9 +369,14 @@ def play_audio(wav, sample_rate=22050):
         # Small delay to ensure previous audio is fully stopped
         import time
         time.sleep(0.1)
-        # Play new audio
-        sd.play(wav, samplerate=sample_rate)
-        sd.wait()
+        
+        # Ensure audio is in the correct format and range
+        wav = np.asarray(wav, dtype=np.float32)
+        wav = np.clip(wav, -1.0, 1.0)
+        
+        # Play new audio with better settings
+        sd.play(wav, samplerate=sample_rate, blocking=True)
+        
     except Exception as e:
         print(f"Audio playback error: {e}")
         # Try to recover by stopping and waiting
@@ -556,6 +533,8 @@ class TTSApp:
         self.text_entry = tk.Text(root, height=5, width=50)
         self.text_entry.pack()
 
+
+
         # Control Buttons Frame
         self.button_frame = tk.Frame(root)
         self.button_frame.pack(pady=5)
@@ -563,7 +542,7 @@ class TTSApp:
         self.speak_button = tk.Button(
             self.button_frame, 
             text="Speak", 
-            command=self.toggle_speak_stop,
+            command=self.speak,
             state=tk.DISABLED
         )
         self.speak_button.pack(side=tk.LEFT, padx=5)
@@ -576,14 +555,7 @@ class TTSApp:
         )
         self.save_button.pack(side=tk.LEFT, padx=5)
 
-        # Help text about stop functionality
-        self.help_label = tk.Label(
-            self.button_frame, 
-            text="💡 Stop button stops audio playback. Synthesis cannot be interrupted.",
-            fg="gray",
-            font=("Arial", 8)
-        )
-        self.help_label.pack(side=tk.LEFT, padx=10)
+
 
     def refresh_models(self):
         """Refresh the model list"""
@@ -1194,18 +1166,7 @@ class TTSApp:
         self.loading_label.config(text="")
         self.loading_anim = None
 
-    def toggle_speak_stop(self):
-        # Prevent rapid clicking
-        import time
-        if hasattr(self, '_last_toggle_time'):
-            if time.time() - self._last_toggle_time < 0.1:  # 100ms debounce
-                return
-        self._last_toggle_time = time.time()
-        
-        if getattr(self, '_speaking', False):
-            self.stop_speaking()
-        else:
-            self.speak()
+
 
     def speak(self):
         if self.synth is None:
@@ -1224,18 +1185,19 @@ class TTSApp:
         def do_speak():
             try:
                 self._speaking = True
-                # Thread-safe GUI updates
-                self.root.after(0, lambda: self.speak_button.config(text="Stop", command=self.toggle_speak_stop, state=tk.NORMAL))
-                self.root.after(0, lambda: self.save_button.config(state=tk.DISABLED))
+                # Disable all buttons during synthesis with grey styling
+                self.root.after(0, lambda: self.speak_button.config(
+                    state=tk.DISABLED, 
+                    bg='#e0e0e0', 
+                    fg='#666666'
+                ))
+                self.root.after(0, lambda: self.save_button.config(
+                    state=tk.DISABLED, 
+                    bg='#e0e0e0', 
+                    fg='#666666'
+                ))
                 self.root.after(0, lambda: self.start_loading("Synthesizing"))
-                
-                # Check if we should stop before synthesis
-                if not self._speaking:
-                    return
-                
-                # Update status to show synthesis is happening
-                self.root.after(0, lambda: self.start_loading("Synthesizing speech..."))
-                self.root.after(0, lambda: self.status_label.config(text="Synthesizing... (Stop will only stop playback)"))
+                self.root.after(0, lambda: self.status_label.config(text="Synthesizing speech..."))
                 
                 if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
                     speaker_name = self.speaker_var.get()
@@ -1245,18 +1207,15 @@ class TTSApp:
                     print(f"Using single-speaker model")
                     self.wav = tts_to_wav(self.synth, text)
                 
-                # Check if we should stop before playback
-                if not self._speaking:
-                    print("Synthesis completed but stopped before playback")
-                    return
-                
                 # Update status for playback
                 self.root.after(0, lambda: self.start_loading("Playing audio..."))
-                self.root.after(0, lambda: self.speak_button.config(text="Speak", command=self.toggle_speak_stop, state=tk.NORMAL))
-                self.root.after(0, lambda: self.status_label.config(text="Playing audio... (Stop will stop playback)"))
+                self.root.after(0, lambda: self.status_label.config(text="Playing audio..."))
                 
-                # Play audio (this can be stopped)
+                # Play audio
                 play_audio(self.wav, self.sample_rate)
+                
+                # Re-enable buttons after completion
+                self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.status_label.config(text=f"{self.current_model} ready"))
                 
@@ -1267,7 +1226,6 @@ class TTSApp:
                 self.root.after(0, lambda: messagebox.showerror("Synthesis Error", error_msg))
             finally:
                 self._speaking = False
-                self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.stop_loading())
         
         import threading
@@ -1346,38 +1304,7 @@ class TTSApp:
         except Exception as e:
             print(f"Warning: Error during cleanup: {e}")
 
-    def stop_speaking(self):
-        try:
-            # Set speaking flag to False first
-            self._speaking = False
-            
-            # Stop audio playback immediately
-            sd.stop()
-            
-            # Small delay to ensure audio is fully stopped
-            import time
-            time.sleep(0.1)
-            
-            # Thread-safe GUI updates
-            self.root.after(0, lambda: self.speak_button.config(text="Speak", command=self.toggle_speak_stop, state=tk.NORMAL))
-            self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.stop_loading())
-            
-            # Show user feedback
-            self.root.after(0, lambda: self.status_label.config(text="Audio stopped"))
-            
-        except Exception as e:
-            print(f"Stop speaking error: {e}")
-            # Try to recover
-            try:
-                sd.stop()
-                self._speaking = False
-                self.root.after(0, lambda: self.speak_button.config(text="Speak", command=self.toggle_speak_stop, state=tk.NORMAL))
-                self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
-                self.root.after(0, lambda: self.stop_loading())
-                self.root.after(0, lambda: self.status_label.config(text="Audio stopped"))
-            except Exception as recovery_error:
-                print(f"Recovery failed: {recovery_error}")
+
 
 if __name__ == "__main__":
     root = tk.Tk()
