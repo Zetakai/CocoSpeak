@@ -119,4 +119,13 @@ See [LICENSE](LICENSE) for details.
 
 For help or to report issues, open an issue on this GitHub repo.
 
---- 
+---
+
+## 🧠 Model Compatibility
+
+- **Supported:** TTS models such as VITS, Tacotron, FastPitch, GlowTTS, Capacitron, and similar.
+- **Not Supported:** Vocoder-only models (e.g., HiFiGAN, MelGAN) are automatically hidden and cannot be selected or downloaded.
+
+## 🛠️ Troubleshooting
+
+- If you see an error about "phonemizer" or "use_phonemes," you may have tried to load a vocoder or an unsupported model. Only TTS models are supported. 

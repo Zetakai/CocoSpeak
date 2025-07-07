@@ -1,4 +1,5 @@
 import os
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 import numpy as np
@@ -10,21 +11,37 @@ from TTS.utils.manage import ModelManager
 import itertools
 from TTS.utils.synthesizer import Synthesizer  # Always import at top level
 
-# Set environment variables to use gruut instead of espeak
+# Check Python version
+if sys.version_info < (3, 6):
+    print("❌ Python 3.6 or higher is required!")
+    print(f"Current version: {sys.version}")
+    sys.exit(1)
+
+# Set environment variables for TTS backend
+# Note: Individual models may override this with their own phonemizer settings
 os.environ["TTS_BACKEND"] = "gruut"
 os.environ["GRUUT_LANG"] = "en"
 
-# Try to import and configure TTS
+# Import TTS with proper error handling
 try:
     from TTS.utils.synthesizer import Synthesizer
     print("✓ TTS imported successfully")
-except Exception as e:
+except ImportError as e:
     print(f"❌ Failed to import TTS: {e}")
+    print("Please install TTS: pip install TTS")
+except Exception as e:
+    print(f"❌ Unexpected error importing TTS: {e}")
+
+# Add this at the top after imports
+if hasattr(sys, '_MEIPASS'):
+    BASE_PATH = sys._MEIPASS
+else:
+    BASE_PATH = os.path.abspath('.')
 
 def get_model_type_from_config(config_path):
     """Determine model type from config file"""
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         
         # Check for model type indicators
@@ -65,39 +82,102 @@ def get_model_type_from_config(config_path):
             return 'GlowTTS'
         
         return 'Unknown'
-    except:
+    except FileNotFoundError:
+        print(f"Config file not found: {config_path}")
+        return 'Unknown'
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON in config file {config_path}: {e}")
+        return 'Unknown'
+    except Exception as e:
+        print(f"Error reading config file {config_path}: {e}")
         return 'Unknown'
 
 def get_model_size_mb(model_path):
     try:
         size = os.path.getsize(model_path)
         return size / (1024 * 1024)
-    except Exception:
+    except FileNotFoundError:
+        print(f"Model file not found: {model_path}")
         return None
+    except OSError as e:
+        print(f"Error accessing model file {model_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error getting model size for {model_path}: {e}")
+        return None
+
+def find_config_file(folder_path, base_name):
+    """Helper function to find config file with multiple fallback names"""
+    config_candidates = [
+        os.path.join(folder_path, f"{base_name}_config.json"),
+        os.path.join(folder_path, "config.json"),
+        os.path.join(folder_path, f"{base_name}.json")
+    ]
+    
+    for config_path in config_candidates:
+        if os.path.exists(config_path):
+            return config_path
+    return None
+
+def fix_phonemizer_config(config_path):
+    """Fix phonemizer configuration issues in model config files"""
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        # Check if phonemizer is set to espeak but we're using gruut
+        if config.get("phonemizer") == "espeak":
+            print(f"⚠️  Model {os.path.basename(config_path)} uses 'espeak' phonemizer, switching to 'gruut'")
+            config["phonemizer"] = "gruut"
+            
+            # Also update phoneme_language if needed
+            if config.get("phoneme_language") == "en":
+                config["phoneme_language"] = "en-us"
+            
+            # Write the updated config back
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+            
+            print(f"✓ Updated phonemizer configuration in {config_path}")
+            return True
+    except Exception as e:
+        print(f"Warning: Could not fix phonemizer config for {config_path}: {e}")
+        return False
+
+def is_tts_model_type(model_type):
+    """Return True if the model_type is a known TTS model, not a vocoder."""
+    if not model_type:
+        return False
+    tts_types = ["vits", "tacotron", "fastpitch", "glow", "tacotron2", "capacitron"]
+    vocoder_types = ["hifigan", "melgan", "vocoder"]
+    model_type = model_type.lower()
+    if any(v in model_type for v in vocoder_types):
+        return False
+    return any(t in model_type for t in tts_types)
 
 def scan_available_models():
     """Recursively scan models directory for available models organized by type"""
     models = {}
-    if not os.path.exists("models"):
+    if not os.path.exists(os.path.join(BASE_PATH, 'models')):
         return models
-    for model_file in glob.glob(os.path.join("models", "**", "*.{pth,pt,ckpt,safetensors}"), recursive=True):
+    
+    # Fix for Windows: use individual patterns instead of brace expansion
+    model_files = []
+    for ext in ["pth", "pt", "ckpt", "safetensors"]:
+        pattern = os.path.join(BASE_PATH, 'models', "**", f"*.{ext}")
+        model_files.extend(glob.glob(pattern, recursive=True))
+    
+    for model_file in model_files:
         folder_path = os.path.dirname(model_file)
         model_name = os.path.basename(model_file)
         base_name = model_name.replace("_model.pth", "").replace("_model.pt", "").replace("_model.ckpt", "").replace("_model.safetensors", "").replace(".pth", "").replace(".pt", "").replace(".ckpt", "").replace(".safetensors", "")
-        config_file = None
-        potential_config = os.path.join(folder_path, f"{base_name}_config.json")
-        if os.path.exists(potential_config):
-            config_file = potential_config
-        if not config_file:
-            potential_config = os.path.join(folder_path, "config.json")
-            if os.path.exists(potential_config):
-                config_file = potential_config
-        if not config_file:
-            potential_config = os.path.join(folder_path, f"{base_name}.json")
-            if os.path.exists(potential_config):
-                config_file = potential_config
-        if config_file and os.path.exists(config_file):
+        config_file = find_config_file(folder_path, base_name)
+        if config_file:
+            # Fix phonemizer configuration if needed
+            fix_phonemizer_config(config_file)
             model_type = get_model_type_from_config(config_file)
+            if not is_tts_model_type(model_type):
+                continue  # skip vocoders
             folder = os.path.basename(folder_path)
             parent_folder = os.path.basename(os.path.dirname(folder_path))
             if folder.lower() == "vctk":
@@ -194,8 +274,23 @@ def play_audio(wav, sample_rate=22050):
     sd.wait()
 
 def save_wav(wav, sample_rate, file_path):
-    from scipy.io.wavfile import write
-    write(file_path, sample_rate, (wav * 32767).astype(np.int16))
+    try:
+        from scipy.io.wavfile import write
+        # Ensure wav is in the correct format
+        if wav.dtype != np.float32 and wav.dtype != np.float64:
+            wav = wav.astype(np.float32)
+        
+        # Normalize and convert to int16
+        wav_normalized = np.clip(wav, -1.0, 1.0)
+        wav_int16 = (wav_normalized * 32767).astype(np.int16)
+        
+        write(file_path, sample_rate, wav_int16)
+    except ImportError:
+        raise Exception("scipy is required for saving WAV files. Install with: pip install scipy")
+    except OSError as e:
+        raise Exception(f"Cannot write to file {file_path}: {e}")
+    except Exception as e:
+        raise Exception(f"Error saving WAV file: {e}")
 
 class TTSApp:
     def __init__(self, root):
@@ -321,7 +416,7 @@ class TTSApp:
         self.speak_button = tk.Button(
             self.button_frame, 
             text="Speak", 
-            command=self.speak,
+            command=self.toggle_speak_stop,
             state=tk.DISABLED
         )
         self.speak_button.pack(side=tk.LEFT, padx=5)
@@ -489,7 +584,7 @@ class TTSApp:
         cancel_button = tk.Button(
             button_frame,
             text="Cancel",
-            command=lambda: self.cancel_download(dialog),
+            command=lambda: self.cancel_download_immediate(dialog),
             bg='#ff6b6b',
             fg='white',
             font=('Arial', 10),
@@ -508,14 +603,15 @@ class TTSApp:
         
         return dialog
 
-    def cancel_download(self, dialog):
-        """Cancel the download"""
+    def cancel_download_immediate(self, dialog):
+        """Cancel the download and close the dialog immediately."""
         dialog.download_cancelled = True
-        dialog.status_label.config(text="Cancelling download...")
+        dialog.status_label.config(text="Download canceled.")
+        dialog.progress_text.config(text="Canceled.")
         dialog.cancel_button.config(state=tk.DISABLED)
+        dialog.after(500, dialog.destroy)
 
     def download_with_progress(self, model_id, model_name):
-        """Download model with real progress tracking"""
         dialog = self.create_download_dialog(model_id, model_name)
         
         def download_thread():
@@ -524,7 +620,7 @@ class TTSApp:
                 import tempfile
                 import zipfile
                 from urllib.parse import urljoin
-                
+                import shutil
                 manager = ModelManager()
                 
                 # Update progress for model info fetch
@@ -541,105 +637,95 @@ class TTSApp:
                     model_info = manager.download_model(model_id)
                     model_path, config_path, model_details = model_info
                 except Exception as e:
-                    # If direct download fails, try manual download
                     dialog.progress_var.set(10)
                     dialog.progress_text.config(text="Preparing manual download...")
                     dialog.status_label.config(text="Setting up download...")
                     dialog.update()
-                    
                     if dialog.download_cancelled:
                         return
-                    
-                    # Create temporary directory
                     temp_dir = tempfile.mkdtemp()
-                    
-                    # Download model file with progress
                     model_url = f"https://huggingface.co/coqui/{model_id}/resolve/main/model.pth"
                     config_url = f"https://huggingface.co/coqui/{model_id}/resolve/main/config.json"
-                    
                     # Download model file
                     dialog.progress_var.set(15)
                     dialog.progress_text.config(text="Downloading model file...")
                     dialog.status_label.config(text="Downloading model weights...")
                     dialog.update()
-                    
                     if dialog.download_cancelled:
                         return
-                    
                     try:
-                        response = requests.get(model_url, stream=True)
-                        response.raise_for_status()
-                        
-                        # Get file size for progress calculation
-                        total_size = int(response.headers.get('content-length', 0))
-                        downloaded = 0
-                        
-                        model_path = os.path.join(temp_dir, "model.pth")
-                        with open(model_path, 'wb') as f:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if dialog.download_cancelled:
-                                    return
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded += len(chunk)
-                                    if total_size > 0:
-                                        progress = 15 + (downloaded / total_size) * 60  # 15% to 75%
-                                        dialog.progress_var.set(progress)
-                                        dialog.progress_text.config(text=f"Downloading model... {progress:.1f}%")
-                                        dialog.status_label.config(text=f"Downloaded {downloaded/(1024*1024):.1f}MB / {total_size/(1024*1024):.1f}MB")
+                        with requests.get(model_url, stream=True, timeout=10) as response:
+                            response.raise_for_status()
+                            total_size = int(response.headers.get('content-length', 0))
+                            downloaded = 0
+                            model_path = os.path.join(temp_dir, "model.pth")
+                            with open(model_path, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    if dialog.download_cancelled:
+                                        dialog.progress_text.config(text="Canceled.")
+                                        dialog.status_label.config(text="Download canceled.")
+                                        dialog.cancel_button.config(state=tk.DISABLED)
                                         dialog.update()
-                    
+                                        return
+                                    if chunk:
+                                        f.write(chunk)
+                                        downloaded += len(chunk)
+                                        if total_size > 0:
+                                            progress = 15 + (downloaded / total_size) * 60
+                                            dialog.progress_var.set(progress)
+                                            dialog.progress_text.config(text=f"Downloading model... {progress:.1f}%")
+                                            dialog.status_label.config(text=f"Downloaded {downloaded/(1024*1024):.1f}MB / {total_size/(1024*1024):.1f}MB")
+                                            dialog.update()
                     except Exception as e:
+                        if dialog.download_cancelled:
+                            return
                         dialog.progress_text.config(text="Download failed!")
                         dialog.status_label.config(text=f"Error downloading model: {str(e)}")
                         dialog.cancel_button.config(text="Close", command=dialog.destroy)
                         dialog.update()
                         messagebox.showerror("Download Error", f"Failed to download model file: {e}")
                         return
-                    
                     # Download config file
                     dialog.progress_var.set(75)
                     dialog.progress_text.config(text="Downloading config file...")
                     dialog.status_label.config(text="Downloading model configuration...")
                     dialog.update()
-                    
                     if dialog.download_cancelled:
                         return
-                    
                     try:
-                        response = requests.get(config_url, stream=True)
-                        response.raise_for_status()
-                        
-                        config_path = os.path.join(temp_dir, "config.json")
-                        with open(config_path, 'wb') as f:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if dialog.download_cancelled:
-                                    return
-                                if chunk:
-                                    f.write(chunk)
-                        
-                        dialog.progress_var.set(85)
-                        dialog.progress_text.config(text="Config downloaded!")
-                        dialog.status_label.config(text="Configuration file downloaded successfully")
-                        dialog.update()
-                        
+                        with requests.get(config_url, stream=True, timeout=10) as response:
+                            response.raise_for_status()
+                            config_path = os.path.join(temp_dir, "config.json")
+                            with open(config_path, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    if dialog.download_cancelled:
+                                        dialog.progress_text.config(text="Canceled.")
+                                        dialog.status_label.config(text="Download canceled.")
+                                        dialog.cancel_button.config(state=tk.DISABLED)
+                                        dialog.update()
+                                        return
+                                    if chunk:
+                                        f.write(chunk)
+                            dialog.progress_var.set(85)
+                            dialog.progress_text.config(text="Config downloaded!")
+                            dialog.status_label.config(text="Configuration file downloaded successfully")
+                            dialog.update()
                     except Exception as e:
+                        if dialog.download_cancelled:
+                            return
                         dialog.progress_text.config(text="Config download failed!")
                         dialog.status_label.config(text=f"Error downloading config: {str(e)}")
                         dialog.cancel_button.config(text="Close", command=dialog.destroy)
                         dialog.update()
                         messagebox.showerror("Download Error", f"Failed to download config file: {e}")
                         return
-                
                 if dialog.download_cancelled:
                     return
-                
                 # Organize files
                 dialog.progress_var.set(90)
                 dialog.progress_text.config(text="Organizing files...")
                 dialog.status_label.config(text="Organizing downloaded files...")
                 dialog.update()
-                
                 folder_name = model_id.split('/')[-1]
                 if 'vctk' in model_id:
                     folder_name = 'vctk'
@@ -647,38 +733,27 @@ class TTSApp:
                     folder_name = 'vits'
                 elif 'tacotron2' in model_id:
                     folder_name = 'tacotron2'
-                
-                model_folder = os.path.join("models", folder_name)
+                model_folder = os.path.join(BASE_PATH, 'models', folder_name)
                 os.makedirs(model_folder, exist_ok=True)
                 local_model_path = os.path.join(model_folder, f"{folder_name}_model.pth")
                 local_config_path = os.path.join(model_folder, f"{folder_name}_config.json")
-                
-                import shutil
                 shutil.copy2(model_path, local_model_path)
                 shutil.copy2(config_path, local_config_path)
-                
                 if dialog.download_cancelled:
                     return
-                
-                # Complete
                 dialog.progress_var.set(100)
                 dialog.progress_text.config(text="Download complete!")
                 dialog.status_label.config(text=f"Model downloaded to {model_folder}/")
                 dialog.cancel_button.config(text="Close", command=dialog.destroy)
                 dialog.update()
-                
-                # Show success message
                 messagebox.showinfo("Success", f"Model downloaded successfully!\nLocation: {model_folder}/")
-                
             except Exception as e:
-                if not dialog.download_cancelled:
+                if not getattr(dialog, 'download_cancelled', False):
                     dialog.progress_text.config(text="Download failed!")
                     dialog.status_label.config(text=f"Error: {str(e)}")
                     dialog.cancel_button.config(text="Close", command=dialog.destroy)
                     dialog.update()
                     messagebox.showerror("Download Error", f"Failed to download model: {e}")
-        
-        # Start download in separate thread
         import threading
         download_thread_obj = threading.Thread(target=download_thread, daemon=True)
         download_thread_obj.start()
@@ -690,16 +765,27 @@ class TTSApp:
                 manager = ModelManager()
                 model_ids = manager.list_models()
                 
+                # Filter out vocoder models
+                def is_tts_model_id(model_id):
+                    tts_keywords = ["vits", "tacotron", "fastpitch", "glow", "tacotron2", "capacitron"]
+                    vocoder_keywords = ["hifigan", "melgan", "vocoder"]
+                    model_id_lower = model_id.lower()
+                    if any(v in model_id_lower for v in vocoder_keywords):
+                        return False
+                    return any(t in model_id_lower for t in tts_keywords)
+                
+                filtered_model_ids = [mid for mid in model_ids if is_tts_model_id(mid)]
+                
                 def parse_model_id(model_id):
                     parts = model_id.split('/')
                     if len(parts) >= 4:
                         return f"{parts[1]} | {parts[2]} | {parts[3]}"
                     return model_id
                 
-                model_names = [parse_model_id(mid) for mid in model_ids]
+                model_names = [parse_model_id(mid) for mid in filtered_model_ids]
                 self.stop_loading()
                 
-                if not model_ids:
+                if not filtered_model_ids:
                     messagebox.showerror("No Models", "No TTS models found in the online model list.")
                     return
                 
@@ -793,7 +879,7 @@ class TTSApp:
                 download_btn = tk.Button(
                     button_frame, 
                     text="Download Selected Model",
-                    command=lambda: self.handle_model_download(listbox, model_ids, model_names, status_label, dialog),
+                    command=lambda: self.handle_model_download(listbox, filtered_model_ids, model_names, status_label, dialog),
                     bg='#4a90e2',
                     fg='white',
                     font=('Arial', 10, 'bold'),
@@ -844,32 +930,70 @@ class TTSApp:
         if not self.current_model or self.current_model not in self.model_configs:
             messagebox.showerror("Error", "Please select a valid model first.")
             return
-        try:
-            use_cuda = self.cuda_var.get()
-            model_config = self.model_configs[self.current_model]
-            self.status_label.config(text=f"Loading {self.current_model}...")
-            self.root.update()
-            self.start_loading("Loading model")
-            # Check if files exist
-            if not os.path.exists(model_config["model_path"]):
-                raise Exception(f"Model file not found: {model_config['model_path']}\nPlease download the model first.")
-            if not os.path.exists(model_config["config_path"]):
-                raise Exception(f"Config file not found: {model_config['config_path']}\nPlease download the model first.")
-            # Load model with proper configuration
-            self.synth = Synthesizer(
-                tts_checkpoint=model_config["model_path"],
-                tts_config_path=model_config["config_path"],
-                use_cuda=use_cuda
-            )
-            self.status_label.config(text=f"{self.current_model} loaded ({'CUDA' if use_cuda else 'CPU'})")
-            self.speak_button.config(state=tk.NORMAL)
-            messagebox.showinfo("Success", f"{self.current_model} loaded successfully!")
-        except Exception as e:
-            error_msg = f"Failed to load {self.current_model}: {e}\n\nPlease ensure:\n1. Model files exist in models/\n2. Run download_specific_model.py to download models"
-            self.status_label.config(text="Model load failed")
-            messagebox.showerror("Model Load Error", error_msg)
-        finally:
-            self.stop_loading()
+        
+        # Prevent multiple simultaneous loads
+        if hasattr(self, '_loading_model') and self._loading_model:
+            messagebox.showwarning("Already loading", "Please wait for the current model to finish loading.")
+            return
+        
+        def load_model_thread():
+            try:
+                self._loading_model = True
+                use_cuda = self.cuda_var.get()
+                model_config = self.model_configs[self.current_model]
+                
+                # Thread-safe GUI updates
+                self.root.after(0, lambda: self.status_label.config(text=f"Loading {self.current_model}..."))
+                self.root.after(0, lambda: self.start_loading("Loading model"))
+                
+                # Check if files exist
+                if not os.path.exists(model_config["model_path"]):
+                    raise FileNotFoundError(f"Model file not found: {model_config['model_path']}\nPlease download the model first.")
+                if not os.path.exists(model_config["config_path"]):
+                    raise FileNotFoundError(f"Config file not found: {model_config['config_path']}\nPlease download the model first.")
+                
+                # Load model with proper configuration
+                self.synth = Synthesizer(
+                    tts_checkpoint=model_config["model_path"],
+                    tts_config_path=model_config["config_path"],
+                    use_cuda=use_cuda
+                )
+                
+                # Thread-safe success updates
+                self.root.after(0, lambda: self.status_label.config(text=f"{self.current_model} loaded ({'CUDA' if use_cuda else 'CPU'})"))
+                self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"{self.current_model} loaded successfully!"))
+                
+            except FileNotFoundError as e:
+                error_msg = f"Model files not found: {e}\n\nPlease ensure:\n1. Model files exist in models/\n2. Download the model first"
+                self.root.after(0, lambda: self.status_label.config(text="Model load failed"))
+                self.root.after(0, lambda: messagebox.showerror("Model Load Error", error_msg))
+            except ImportError as e:
+                error_msg = f"TTS library error: {e}\n\nPlease ensure TTS is properly installed"
+                self.root.after(0, lambda: self.status_label.config(text="Model load failed"))
+                self.root.after(0, lambda: messagebox.showerror("Import Error", error_msg))
+            except Exception as e:
+                error_msg = f"Failed to load {self.current_model}: {e}\n\n"
+                
+                # Check for specific phonemizer errors
+                if "phonemizer" in str(e).lower() or "phoneme" in str(e).lower():
+                    error_msg += "This appears to be a phonemizer configuration issue.\n"
+                    error_msg += "The model may need a different phonemizer setting.\n\n"
+                    error_msg += "Try:\n"
+                    error_msg += "1. Restart the app to auto-fix phonemizer settings\n"
+                    error_msg += "2. Check if gruut/espeak is properly installed\n"
+                    error_msg += "3. Try a different model\n"
+                else:
+                    error_msg += "Please ensure:\n1. Model files exist in models/\n2. Model files are not corrupted\n3. TTS library is properly installed"
+                
+                self.root.after(0, lambda: self.status_label.config(text="Model load failed"))
+                self.root.after(0, lambda: messagebox.showerror("Model Load Error", error_msg))
+            finally:
+                self._loading_model = False
+                self.root.after(0, lambda: self.stop_loading())
+        
+        import threading
+        threading.Thread(target=load_model_thread, daemon=True).start()
 
     def start_loading(self, msg="Loading"):
         if self.loading_anim:
@@ -893,6 +1017,12 @@ class TTSApp:
         self.loading_label.config(text="")
         self.loading_anim = None
 
+    def toggle_speak_stop(self):
+        if getattr(self, '_speaking', False):
+            self.stop_speaking()
+        else:
+            self.speak()
+
     def speak(self):
         if self.synth is None:
             messagebox.showwarning("Model not loaded", "Please load the model first.")
@@ -901,11 +1031,20 @@ class TTSApp:
         if not text:
             messagebox.showwarning("Input required", "Please enter some text.")
             return
+        
+        # Prevent multiple simultaneous synthesis
+        if hasattr(self, '_speaking') and self._speaking:
+            messagebox.showwarning("Already speaking", "Please wait for the current synthesis to finish.")
+            return
+        
         def do_speak():
             try:
-                self.speak_button.config(state=tk.DISABLED)
-                self.save_button.config(state=tk.DISABLED)
-                self.start_loading("Speaking")
+                self._speaking = True
+                # Thread-safe GUI updates
+                self.root.after(0, lambda: self.speak_button.config(text="Stop", command=self.toggle_speak_stop, state=tk.NORMAL))
+                self.root.after(0, lambda: self.save_button.config(state=tk.DISABLED))
+                self.root.after(0, lambda: self.start_loading("Speaking"))
+                
                 if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
                     speaker_name = self.speaker_var.get()
                     print(f"Using multi-speaker model with speaker: {speaker_name}")
@@ -913,16 +1052,21 @@ class TTSApp:
                 else:
                     print(f"Using single-speaker model")
                     self.wav = tts_to_wav(self.synth, text)
+                
+                self.root.after(0, lambda: self.speak_button.config(text="Speak", command=self.toggle_speak_stop, state=tk.NORMAL))
                 play_audio(self.wav, self.sample_rate)
-                self.save_button.config(state=tk.NORMAL)
+                self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
+                
             except Exception as e:
                 error_msg = f"Failed to synthesize speech: {e}\n\nModel: {self.current_model}\nText: {text}"
                 if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
                     error_msg += f"\nSpeaker: {self.speaker_var.get()}"
-                messagebox.showerror("Synthesis Error", error_msg)
+                self.root.after(0, lambda: messagebox.showerror("Synthesis Error", error_msg))
             finally:
-                self.speak_button.config(state=tk.NORMAL)
-                self.stop_loading()
+                self._speaking = False
+                self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.stop_loading())
+        
         import threading
         threading.Thread(target=do_speak, daemon=True).start()
 
@@ -960,7 +1104,7 @@ class TTSApp:
             if not model_name:
                 return
             model_name = model_name.replace(" ", "_")
-            dest_folder = os.path.join("models", "custom", model_name)
+            dest_folder = os.path.join(BASE_PATH, "models", "custom", model_name)
             os.makedirs(dest_folder, exist_ok=True)
             dest_model = os.path.join(dest_folder, os.path.basename(model_path))
             dest_config = os.path.join(dest_folder, os.path.basename(config_path))
@@ -972,7 +1116,40 @@ class TTSApp:
         except Exception as e:
             messagebox.showerror("Import Error", f"Failed to import custom model: {e}")
 
+    def cleanup(self):
+        """Clean up resources before closing"""
+        try:
+            # Stop any ongoing operations
+            self._speaking = False
+            self._loading_model = False
+            self._loading_running = False
+            
+            # Clear synthesizer to free memory
+            if hasattr(self, 'synth') and self.synth is not None:
+                self.synth = None
+            
+            print("✓ Cleanup completed")
+        except Exception as e:
+            print(f"Warning: Error during cleanup: {e}")
+
+    def stop_speaking(self):
+        try:
+            sd.stop()
+            self.speak_button.config(text="Speak", command=self.toggle_speak_stop, state=tk.NORMAL)
+            self.save_button.config(state=tk.NORMAL)
+            self._speaking = False
+            self.stop_loading()
+        except Exception as e:
+            messagebox.showerror("Stop Error", f"Failed to stop playback: {e}")
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = TTSApp(root)
+    
+    # Set up cleanup on window close
+    def on_closing():
+        app.cleanup()
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop() 
