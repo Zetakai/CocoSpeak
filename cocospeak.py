@@ -279,12 +279,37 @@ def scan_available_models():
                     display_name = f"{model_type} - {folder} [{model_name}]"
                 size_mb = get_model_size_mb(os.path.join(root, file))
                 size_str = f" [{size_mb:.1f} MB]" if size_mb else ""
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
+                args = config_data.get('model_args', {})
+                use_speaker_embedding = args.get('use_speaker_embedding', False)
+                num_speakers = args.get('num_speakers', 1)
+                speakers_file = args.get('speakers_file', None)
+                speakers_list = []
+                if speakers_file:
+                    # Always join with config path (model folder)
+                    speakers_path = os.path.join(os.path.dirname(config_file), speakers_file)
+                    if os.path.exists(speakers_path):
+                        try:
+                            import torch
+                            speakers_dict = torch.load(speakers_path, map_location='cpu')
+                            if isinstance(speakers_dict, dict):
+                                speakers_list = list(speakers_dict.keys())
+                            elif isinstance(speakers_dict, list):
+                                speakers_list = [str(i) for i in range(len(speakers_dict))]
+                        except Exception as e:
+                            print(f"Failed to load speakers.pth for dropdown: {e}")
+                if not speakers_list and (use_speaker_embedding or num_speakers > 1):
+                    speakers_list = [str(i) for i in range(num_speakers)]
+                # Store speakers_list in the model config for later use
+                model_speakers = speakers_list if (use_speaker_embedding or num_speakers > 1) else None
                 models[display_name + size_str] = {
                     "model_path": os.path.join(root, file),
                     "config_path": config_file,
                     "model_type": model_type,
                     "folder": folder,
-                    "description": f"{model_type} model in {folder_path} [{model_name}]{size_str}"
+                    "description": f"{model_type} model in {folder_path} [{model_name}]{size_str}",
+                    "speakers_list": model_speakers
                 }
                 print(f"Added model: {display_name + size_str}")
             else:
@@ -1392,8 +1417,10 @@ class TTSApp:
                     # Try to load speakers.pth or similar
                     if speakers_file:
                         speakers_path = os.path.join(os.path.dirname(model_config["config_path"]), speakers_file)
+                        print(f"[DEBUG] Attempting to load speakers mapping from: {speakers_path}")
                         if os.path.exists(speakers_path):
                             try:
+                                import torch
                                 speakers_dict = torch.load(speakers_path, map_location="cpu")
                                 if isinstance(speakers_dict, dict):
                                     speakers_list = list(speakers_dict.keys())
@@ -1418,18 +1445,25 @@ class TTSApp:
                 else:
                     self.speaker_frame.pack_forget()
                 # Load the synthesizer as before
+                model_folder = os.path.dirname(model_config["config_path"])
+                original_cwd = os.getcwd()
                 try:
-                    self.synth = Synthesizer(
-                        tts_checkpoint=model_config["model_path"],
-                        tts_config_path=model_config["config_path"],
-                        use_cuda=use_cuda
-                    )
-                except TypeError:
-                    self.synth = Synthesizer(
-                        tts_checkpoint=model_config["model_path"],
-                        tts_config_path=model_config["config_path"],
-                        use_cuda=use_cuda
-                    )
+                    os.chdir(model_folder)
+                    # Load the synthesizer as before
+                    try:
+                        self.synth = Synthesizer(
+                            tts_checkpoint=model_config["model_path"],
+                            tts_config_path=model_config["config_path"],
+                            use_cuda=use_cuda
+                        )
+                    except TypeError:
+                        self.synth = Synthesizer(
+                            tts_checkpoint=model_config["model_path"],
+                            tts_config_path=model_config["config_path"],
+                            use_cuda=use_cuda
+                        )
+                finally:
+                    os.chdir(original_cwd)
                 # Try to configure phonemizer to avoid subprocess calls
                 try:
                     if hasattr(self.synth, 'synthesizer') and hasattr(self.synth.synthesizer, 'phonemizer'):
@@ -1445,19 +1479,46 @@ class TTSApp:
                 # Test synthesis with a short text
                 print("Running test synthesis...")
                 try:
-                    test_wav = self.synth.tts("Test")
-                    print(f"✓ Test synthesis successful: {len(test_wav)} samples")
-                    if len(test_wav) < 44100:  # Less than 2 seconds
-                        print(f"⚠️  WARNING: Test synthesis produced very short audio ({len(test_wav)} samples)")
-                    
-                    # Check if the test audio makes sense (not just noise)
-                    test_audio_mean = np.mean(np.abs(test_wav))
-                    print(f"Test audio mean amplitude: {test_audio_mean}")
-                    if test_audio_mean < 0.01:
-                        print(f"⚠️  WARNING: Test audio seems too quiet, might be noise")
-                    elif test_audio_mean > 0.5:
-                        print(f"⚠️  WARNING: Test audio seems too loud, might be distorted")
-                    
+                    # Use first speaker for test if multi-speaker
+                    test_wav = None
+                    if (use_speaker_embedding or num_speakers > 1) and speakers_list:
+                        test_speaker = speakers_list[0]
+                        test_errors = []
+                        try:
+                            test_wav = self.synth.tts("Test", speaker=test_speaker)
+                        except Exception as e1:
+                            test_errors.append(f"speaker: {e1}")
+                            try:
+                                test_wav = self.synth.tts("Test", speaker_idx=test_speaker)
+                            except Exception as e2:
+                                test_errors.append(f"speaker_idx: {e2}")
+                                try:
+                                    test_wav = self.synth.tts("Test", speaker_id=test_speaker)
+                                except Exception as e3:
+                                    test_errors.append(f"speaker_id: {e3}")
+                                    try:
+                                        test_wav = self.synth.tts("Test", speaker_name=str(test_speaker))
+                                    except Exception as e4:
+                                        test_errors.append(f"speaker_name: {e4}")
+                                        try:
+                                            test_wav = self.synth.tts("Test", test_speaker)
+                                        except Exception as e5:
+                                            test_errors.append(f"positional: {e5}")
+                        if test_wav is None:
+                            print(f"⚠️  Test synthesis failed: All attempts failed: {' | '.join(test_errors)}")
+                    else:
+                        test_wav = self.synth.tts("Test")
+                    if test_wav is not None:
+                        print(f"✓ Test synthesis successful: {len(test_wav)} samples")
+                        if len(test_wav) < 44100:  # Less than 2 seconds
+                            print(f"⚠️  WARNING: Test synthesis produced very short audio ({len(test_wav)} samples)")
+                        # Check if the test audio makes sense (not just noise)
+                        test_audio_mean = np.mean(np.abs(test_wav))
+                        print(f"Test audio mean amplitude: {test_audio_mean}")
+                        if test_audio_mean < 0.01:
+                            print(f"⚠️  WARNING: Test audio seems too quiet, might be noise")
+                        elif test_audio_mean > 0.5:
+                            print(f"⚠️  WARNING: Test audio seems too loud, might be distorted")
                 except Exception as test_e:
                     print(f"⚠️  Test synthesis failed: {test_e}")
                 
