@@ -14,6 +14,7 @@ import collections
 import keyboard
 import platform
 import subprocess
+import torch  # Add this import at the top
 
 # Suppress command prompt windows from subprocesses
 if platform.system() == "Windows":
@@ -34,7 +35,7 @@ if sys.version_info < (3, 6):
 
 # Set environment variables for TTS backend
 # Note: Individual models may override this with their own phonemizer settings
-os.environ["TTS_BACKEND"] = "gruut"
+os.environ["TTS_BACKEND"] = "espeak"
 os.environ["GRUUT_LANG"] = "en"
 
 # Debug environment variables
@@ -735,7 +736,7 @@ class TTSApp:
         self.save_button.pack(side=tk.LEFT, padx=5)
 
         # Phonemizer selection
-        self.phonemizer_var = tk.StringVar(value="gruut")
+        self.phonemizer_var = tk.StringVar(value="espeak")
         phonemizer_frame = tk.Frame(root)
         phonemizer_frame.pack(pady=5)
         tk.Label(phonemizer_frame, text="Phonemizer:").pack(side=tk.LEFT)
@@ -1340,27 +1341,22 @@ class TTSApp:
                 self._loading_model = True
                 use_cuda = self.cuda_var.get()
                 model_config = self.model_configs[self.current_model]
-                
                 print(f"Loading model: {self.current_model}")
                 print(f"Model path: {model_config['model_path']}")
                 print(f"Config path: {model_config['config_path']}")
                 print(f"CUDA enabled: {use_cuda}")
                 print(f"Running as EXE: {getattr(sys, 'frozen', False)}")
-                
                 # Thread-safe GUI updates
                 self.root.after(0, lambda: self.status_label.config(text=f"Loading {self.current_model}..."))
                 self.root.after(0, lambda: self.start_loading("Loading model"))
-                
                 # Check if files exist
                 print(f"Checking model files:")
                 print(f"  - Model file exists: {os.path.exists(model_config['model_path'])}")
                 print(f"  - Config file exists: {os.path.exists(model_config['config_path'])}")
-                
                 if not os.path.exists(model_config["model_path"]):
                     raise FileNotFoundError(f"Model file not found: {model_config['model_path']}\nPlease download the model first.")
                 if not os.path.exists(model_config["config_path"]):
                     raise FileNotFoundError(f"Config file not found: {model_config['config_path']}\nPlease download the model first.")
-                
                 # Check file sizes
                 try:
                     model_size = os.path.getsize(model_config["model_path"]) / (1024*1024)
@@ -1369,30 +1365,58 @@ class TTSApp:
                     print(f"  - Config file size: {config_size:.1f} KB")
                 except Exception as size_e:
                     print(f"  - Could not get file sizes: {size_e}")
-                
-                # Load model with proper configuration
-                print(f"Loading synthesizer with:")
-                print(f"  - Model: {model_config['model_path']}")
-                print(f"  - Config: {model_config['config_path']}")
-                print(f"  - CUDA: {use_cuda}")
-                
-                # Read and display config info
+                # Load config and check for multi-speaker
+                with open(model_config["config_path"], 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
+                use_speaker_embedding = False
+                num_speakers = 1
+                speakers_list = []
+                if "model_args" in config_data:
+                    args = config_data["model_args"]
+                    use_speaker_embedding = args.get("use_speaker_embedding", False)
+                    num_speakers = args.get("num_speakers", 1)
+                    speakers_file = args.get("speakers_file", None)
+                    # Try to load speakers.pth or similar
+                    if speakers_file:
+                        speakers_path = os.path.join(os.path.dirname(model_config["config_path"]), speakers_file)
+                        if os.path.exists(speakers_path):
+                            try:
+                                speakers_dict = torch.load(speakers_path, map_location="cpu")
+                                if isinstance(speakers_dict, dict):
+                                    speakers_list = list(speakers_dict.keys())
+                                    print(f"Loaded {len(speakers_list)} speakers from {speakers_file}")
+                                elif isinstance(speakers_dict, list):
+                                    speakers_list = [str(i) for i in range(len(speakers_dict))]
+                                    print(f"Loaded {len(speakers_list)} speakers (list) from {speakers_file}")
+                                else:
+                                    print(f"speakers.pth is not a dict or list!")
+                            except Exception as e:
+                                print(f"Failed to load speakers.pth: {e}")
+                # Fallback: if no speakers.pth, but multi-speaker, use numeric IDs
+                if not speakers_list and (use_speaker_embedding or num_speakers > 1):
+                    speakers_list = [str(i) for i in range(num_speakers)]
+                    print(f"Fallback: using numeric speaker IDs: {speakers_list}")
+                # Update speaker dropdown if multi-speaker
+                if (use_speaker_embedding or num_speakers > 1) and speakers_list:
+                    self.speaker_combo['values'] = speakers_list
+                    self.speaker_var.set(speakers_list[0])
+                    self.speaker_frame.pack(pady=5)
+                    self.speaker_label.config(text="Speaker:")
+                else:
+                    self.speaker_frame.pack_forget()
+                # Load the synthesizer as before
                 try:
-                    with open(model_config["config_path"], 'r', encoding='utf-8') as f:
-                        config_data = json.load(f)
-                    print(f"  - Model type: {config_data.get('model', 'Unknown')}")
-                    print(f"  - Phonemizer: {config_data.get('phonemizer', 'Unknown')}")
-                    print(f"  - Phoneme language: {config_data.get('phoneme_language', 'Unknown')}")
-                except Exception as config_e:
-                    print(f"  - Could not read config details: {config_e}")
-                
-                print("Creating synthesizer...")
-                self.synth = Synthesizer(
-                    tts_checkpoint=model_config["model_path"],
-                    tts_config_path=model_config["config_path"],
-                    use_cuda=use_cuda
-                )
-                
+                    self.synth = Synthesizer(
+                        tts_checkpoint=model_config["model_path"],
+                        tts_config_path=model_config["config_path"],
+                        use_cuda=use_cuda
+                    )
+                except TypeError:
+                    self.synth = Synthesizer(
+                        tts_checkpoint=model_config["model_path"],
+                        tts_config_path=model_config["config_path"],
+                        use_cuda=use_cuda
+                    )
                 # Try to configure phonemizer to avoid subprocess calls
                 try:
                     if hasattr(self.synth, 'synthesizer') and hasattr(self.synth.synthesizer, 'phonemizer'):
@@ -1530,14 +1554,17 @@ class TTSApp:
                 ))
                 self.root.after(0, lambda: self.start_loading("Synthesizing"))
                 self.root.after(0, lambda: self.status_label.config(text="Synthesizing speech..."))
-                if "VCTK" in self.current_model or "Multi-Speaker" in self.current_model:
-                    speaker_name = self.speaker_var.get()
-                    self.wav = tts_to_wav_vctk(self.synth, text, speaker_name)
+                # Pass speaker if multi-speaker
+                speaker = None
+                if hasattr(self, 'speaker_var') and self.speaker_var.get():
+                    speaker = self.speaker_var.get()
+                if speaker:
+                    wav = self.synth.tts(text, speaker=speaker)
                 else:
-                    self.wav = tts_to_wav(self.synth, text)
+                    wav = self.synth.tts(text)
                 self.root.after(0, lambda: self.start_loading("Playing audio..."))
                 self.root.after(0, lambda: self.status_label.config(text="Playing audio..."))
-                play_audio(self.wav, self.sample_rate)
+                play_audio(wav, self.sample_rate)
                 self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.status_label.config(text=f"{self.current_model} ready"))
