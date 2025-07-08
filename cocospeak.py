@@ -237,52 +237,58 @@ def scan_available_models():
         print(f"Models directory does not exist: {models_dir}")
         return models
     
-    # Fix for Windows: use individual patterns instead of brace expansion
-    model_files = []
-    for ext in ["pth", "pt", "ckpt", "safetensors"]:
-        pattern = os.path.join(models_dir, "**", f"*.{ext}")
-        found_files = glob.glob(pattern, recursive=True)
-        model_files.extend(found_files)
-        print(f"Found {len(found_files)} files with extension .{ext}")
-    
-    print(f"Total model files found: {len(model_files)}")
-    
-    for model_file in model_files:
-        folder_path = os.path.dirname(model_file)
-        model_name = os.path.basename(model_file)
-        base_name = model_name.replace("_model.pth", "").replace("_model.pt", "").replace("_model.ckpt", "").replace("_model.safetensors", "").replace(".pth", "").replace(".pt", "").replace(".ckpt", "").replace(".safetensors", "")
-        config_file = find_config_file(folder_path, base_name)
-        if config_file:
-            # Fix phonemizer configuration if needed
-            fix_phonemizer_config(config_file)
-            model_type = get_model_type_from_config(config_file)
-            if not is_tts_model_type(model_type):
-                print(f"Skipping vocoder model: {model_name}")
-                continue  # skip vocoders
-            folder = os.path.basename(folder_path)
-            parent_folder = os.path.basename(os.path.dirname(folder_path))
-            if folder.lower() == "vctk":
-                display_name = f"VITS (VCTK) - Multi-Speaker"
-            elif folder.lower() == "vits":
-                display_name = f"VITS (LJSpeech) - Single Speaker"
-            elif folder.lower() == "custom":
-                display_name = f"Custom Model - {model_name}"
-            elif parent_folder.lower() == "custom":
-                display_name = f"Custom Model - {folder} [{model_name}]"
+    # Only include files that look like model files
+    model_file_patterns = [
+        '_model.pth', '_model.pt', '_model.ckpt', '_model.safetensors',
+        '.pth', '.pt', '.ckpt', '.safetensors'
+    ]
+    non_model_filenames = [
+        'speakers.pth', 'config.json', 'speakers.json', 'speakers.pkl',
+        'language_ids.json', 'language_ids.pth', 'd_vector_file.pth', 'd_vector_file.json'
+    ]
+    for root, dirs, files in os.walk(models_dir):
+        for file in files:
+            # Exclude non-model files
+            if file.lower() in non_model_filenames:
+                continue
+            # Only include files with model-like extensions/names
+            if not any(file.endswith(pattern) for pattern in model_file_patterns):
+                continue
+            folder_path = root
+            model_name = file
+            base_name = model_name.replace("_model.pth", "").replace("_model.pt", "").replace("_model.ckpt", "").replace("_model.safetensors", "").replace(".pth", "").replace(".pt", "").replace(".ckpt", "").replace(".safetensors", "")
+            config_file = find_config_file(folder_path, base_name)
+            if config_file:
+                # Fix phonemizer configuration if needed
+                fix_phonemizer_config(config_file)
+                model_type = get_model_type_from_config(config_file)
+                if not is_tts_model_type(model_type):
+                    print(f"Skipping vocoder model: {model_name}")
+                    continue  # skip vocoders
+                folder = os.path.basename(folder_path)
+                parent_folder = os.path.basename(os.path.dirname(folder_path))
+                if folder.lower() == "vctk":
+                    display_name = f"VITS (VCTK) - Multi-Speaker"
+                elif folder.lower() == "vits":
+                    display_name = f"VITS (LJSpeech) - Single Speaker"
+                elif folder.lower() == "custom":
+                    display_name = f"Custom Model - {model_name}"
+                elif parent_folder.lower() == "custom":
+                    display_name = f"Custom Model - {folder} [{model_name}]"
+                else:
+                    display_name = f"{model_type} - {folder} [{model_name}]"
+                size_mb = get_model_size_mb(os.path.join(root, file))
+                size_str = f" [{size_mb:.1f} MB]" if size_mb else ""
+                models[display_name + size_str] = {
+                    "model_path": os.path.join(root, file),
+                    "config_path": config_file,
+                    "model_type": model_type,
+                    "folder": folder,
+                    "description": f"{model_type} model in {folder_path} [{model_name}]{size_str}"
+                }
+                print(f"Added model: {display_name + size_str}")
             else:
-                display_name = f"{model_type} - {folder} [{model_name}]"
-            size_mb = get_model_size_mb(model_file)
-            size_str = f" [{size_mb:.1f} MB]" if size_mb else ""
-            models[display_name + size_str] = {
-                "model_path": model_file,
-                "config_path": config_file,
-                "model_type": model_type,
-                "folder": folder,
-                "description": f"{model_type} model in {folder_path} [{model_name}]{size_str}"
-            }
-            print(f"Added model: {display_name + size_str}")
-        else:
-            print(f"No config file found for model: {model_name}")
+                print(f"No config file found for model: {model_name}")
     
     print(f"Total TTS models found: {len(models)}")
     return models
@@ -622,8 +628,15 @@ class TTSApp:
         # CUDA/CPU Selection Frame
         self.cuda_frame = tk.Frame(root)
         self.cuda_frame.pack(pady=5)
-        
-        self.cuda_var = tk.BooleanVar(value=False)
+
+        # Automatically detect CUDA availability
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+        except Exception as e:
+            print(f"CUDA detection failed: {e}")
+            cuda_available = False
+        self.cuda_var = tk.BooleanVar(value=cuda_available)
         self.cuda_checkbox = tk.Checkbutton(
             self.cuda_frame, 
             text="Use CUDA (GPU)", 
@@ -1451,7 +1464,10 @@ class TTSApp:
                 # Thread-safe success updates
                 self.root.after(0, lambda: self.status_label.config(text=f"{self.current_model} loaded ({'CUDA' if use_cuda else 'CPU'})"))
                 self.root.after(0, lambda: self.speak_button.config(state=tk.NORMAL))
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"{self.current_model} loaded successfully!"))
+                self.root.after(0, lambda: self.save_button.config(state=tk.NORMAL))
+                
+                # In TTSApp.__init__ or load_model_thread, after detecting speakers_list:
+                self.speakers_list = speakers_list  # Store for later lookup
                 
             except FileNotFoundError as e:
                 error_msg = f"Model files not found: {e}\n\nPlease ensure:\n1. Model files exist in models/\n2. Download the model first"
@@ -1557,9 +1573,41 @@ class TTSApp:
                 # Pass speaker if multi-speaker
                 speaker = None
                 if hasattr(self, 'speaker_var') and self.speaker_var.get():
-                    speaker = self.speaker_var.get()
-                if speaker:
-                    wav = self.synth.tts(text, speaker=speaker)
+                    speaker_name = self.speaker_var.get()
+                    # If multi-speaker, pass index instead of name
+                    if hasattr(self, 'speakers_list') and self.speakers_list:
+                        try:
+                            speaker = self.speakers_list.index(speaker_name)
+                        except ValueError:
+                            speaker = speaker_name  # fallback to name if not found
+                        else:
+                            speaker = speaker_name
+                if speaker is not None:
+                    # Try all common argument names for multi-speaker models
+                    wav = None
+                    errors = []
+                    try:
+                        wav = self.synth.tts(text, speaker=speaker)
+                    except Exception as e1:
+                        errors.append(f"speaker: {e1}")
+                        try:
+                            wav = self.synth.tts(text, speaker_idx=speaker)
+                        except Exception as e2:
+                            errors.append(f"speaker_idx: {e2}")
+                            try:
+                                wav = self.synth.tts(text, speaker_id=speaker)
+                            except Exception as e3:
+                                errors.append(f"speaker_id: {e3}")
+                                try:
+                                    wav = self.synth.tts(text, speaker_name=str(speaker))
+                                except Exception as e4:
+                                    errors.append(f"speaker_name: {e4}")
+                                    try:
+                                        wav = self.synth.tts(text, speaker)
+                                    except Exception as e5:
+                                        errors.append(f"positional: {e5}")
+                    if wav is None:
+                        raise Exception("All attempts to synthesize with speaker failed: " + " | ".join(errors))
                 else:
                     wav = self.synth.tts(text)
                 self.root.after(0, lambda: self.start_loading("Playing audio..."))
@@ -1606,6 +1654,26 @@ class TTSApp:
             )
             if not config_path:
                 return
+            # Check if config indicates multi-speaker
+            is_multi_speaker = False
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
+                args = config_data.get("model_args", {})
+                if args.get("use_speaker_embedding", False) or args.get("num_speakers", 1) > 1:
+                    is_multi_speaker = True
+            except Exception as e:
+                print(f"Warning: Could not parse config for multi-speaker check: {e}")
+            # Optional: Speaker mapping file
+            speaker_file_path = filedialog.askopenfilename(
+                title="(Optional) Select Speaker Mapping File (e.g., speakers.pth)",
+                filetypes=[("Speaker Mapping", "*.pth;*.pt;*.json;*.pkl"), ("All Files", "*.")]
+            )
+            if is_multi_speaker and not speaker_file_path:
+                messagebox.showwarning(
+                    "Speaker Mapping Recommended",
+                    "This model appears to be multi-speaker, but you did not select a speaker mapping file.\n\nYou can still import, but speaker names may not be available."
+                )
             model_name = simpledialog.askstring(
                 "Model Name",
                 "Enter a name for your custom model (no spaces):",
@@ -1624,6 +1692,11 @@ class TTSApp:
             import shutil
             shutil.copy2(model_path, dest_model)
             shutil.copy2(config_path, dest_config)
+            # Copy speaker mapping file if provided, always as speakers.pth
+            if speaker_file_path:
+                dest_speaker = os.path.join(dest_folder, "speakers.pth")
+                shutil.copy2(speaker_file_path, dest_speaker)
+                print(f"✓ Imported speaker mapping file as: {dest_speaker}")
             messagebox.showinfo("Success", f"Custom model imported as '{model_name}'.")
             self.refresh_models()
         except Exception as e:
