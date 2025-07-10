@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMessageBox, QFileDialog, QProgressBar, QListWidget,
                              QDialog, QLineEdit, QFrame, QSplitter, QGroupBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QKeyEvent
+from PyQt6.QtGui import QFont, QKeyEvent, QKeySequence
 import keyboard
 import threading
 import collections
@@ -90,7 +90,18 @@ class HotkeyInputDialog(QDialog):
         self.hotkey_label = QLabel(self.hotkey or "No hotkey set")
         self.hotkey_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         self.hotkey_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.hotkey_label.setStyleSheet("padding: 10px; border: 2px solid #ccc; border-radius: 5px; background: #f0f0f0;")
+        # Match Enter text style (dark bg, border, padding)
+        self.hotkey_label.setStyleSheet("""
+            QLabel {
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                padding: 8px;
+                background: #222; /* dark background for dark mode */
+                color: #eee;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 11px;
+            }
+        """)
         layout.addWidget(self.hotkey_label)
         
         # Buttons
@@ -123,9 +134,13 @@ class HotkeyInputDialog(QDialog):
             if event.modifiers() & Qt.KeyboardModifier.MetaModifier:
                 modifiers.append("meta")
                 
-            # Get the key name
-            key_name = event.text().lower() if event.text() else event.key()
-            
+            # Get the key name as string
+            if event.text():
+                key_name = event.text().lower()
+            else:
+                key_seq = QKeySequence(event.key())
+                key_name = key_seq.toString().lower() if key_seq.toString() else str(event.key())
+                
             # Build the hotkey string
             if modifiers:
                 self.hotkey = "+".join(modifiers + [key_name])
@@ -142,9 +157,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("CocoSpeak TTS App")
         self.resize(1000, 700)
-        
-        # Only one hotkey, but allow combinations
-        self.hotkey = 'ctrl+alt+t'
+        self.hotkey = '/'  # Set default hotkey to '/'
         self.sample_rate = 22050
         self.current_audio = None
         self.synth = None
@@ -152,12 +165,12 @@ class MainWindow(QMainWindow):
         self._loading_model = False
         self.is_minimized = False
         self.tts_queue = collections.deque()
+        self._hotkey_handler = None
+        self.queue_lock = threading.Lock() # Add a lock for thread-safe queue access
         
         self.setup_ui()
         self.populate_models()
-        
-        self._hotkey_handler = None
-        threading.Thread(target=self._start_hotkey_listener, daemon=True).start()
+        self.register_global_hotkey(self.hotkey)
         QTimer.singleShot(100, self.focus_text_entry)
 
     def setup_ui(self):
@@ -191,41 +204,42 @@ class MainWindow(QMainWindow):
         # CUDA and Model Loading Frame
         cuda_group = QGroupBox("Model Loading")
         cuda_layout = QHBoxLayout()
-        
+        cuda_layout.setSpacing(4)  # Lower margin between controls
         # CUDA checkbox
         self.cuda_checkbox = QCheckBox("Use CUDA (GPU)")
         try:
             import torch
             cuda_available = torch.cuda.is_available()
-            self.cuda_checkbox.setChecked(cuda_available)
         except:
-            self.cuda_checkbox.setChecked(False)
+            cuda_available = False
+        self.cuda_checkbox.setChecked(cuda_available)
         self.cuda_checkbox.toggled.connect(self.on_cuda_change)
         cuda_layout.addWidget(self.cuda_checkbox)
-        
+        # Button width for all model loading buttons
+        btn_width = 170
         # Load model button
         self.load_btn = QPushButton("Load Model")
+        self.load_btn.setFixedWidth(btn_width)
         self.load_btn.clicked.connect(self.load_model)
         cuda_layout.addWidget(self.load_btn)
-        
-        # Status label
+        # Status label (inline, not wide)
         self.status_label = QLabel("Model not loaded")
         cuda_layout.addWidget(self.status_label)
-        
         # Download online model button
         self.download_online_btn = QPushButton("Download Online Model")
+        self.download_online_btn.setFixedWidth(btn_width)
         self.download_online_btn.clicked.connect(self.open_online_model_dialog)
         cuda_layout.addWidget(self.download_online_btn)
-        
+        # Import custom model button
         self.import_custom_btn = QPushButton("Import Custom Model")
+        self.import_custom_btn.setFixedWidth(btn_width)
         self.import_custom_btn.clicked.connect(self.import_custom_model)
         cuda_layout.addWidget(self.import_custom_btn)
-        
-        # Hotkey button
-        self.hotkey_btn = QPushButton("Set Hotkeys")
+        # Hotkey button shows current hotkey
+        self.hotkey_btn = QPushButton(f"Set Hotkey ({self.hotkey})")
+        self.hotkey_btn.setFixedWidth(170)
         self.hotkey_btn.clicked.connect(self.set_hotkeys)
         cuda_layout.addWidget(self.hotkey_btn)
-        
         cuda_group.setLayout(cuda_layout)
         layout.addWidget(cuda_group)
         
@@ -241,53 +255,43 @@ class MainWindow(QMainWindow):
         
         # Text and Queue Frame
         text_queue_group = QGroupBox("Text Input and Queue")
-        text_queue_layout = QHBoxLayout()
-        text_queue_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # flex-start alignment
+        text_queue_layout = QVBoxLayout()
+        splitter = QSplitter()
+        splitter.setOrientation(Qt.Orientation.Horizontal)
         
         # Text input on the left
         text_frame = QFrame()
         text_layout = QVBoxLayout()
-        text_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # flex-start alignment
-        
         text_label = QLabel("Enter text:")
         text_layout.addWidget(text_label)
-        
         self.text_input = QTextEdit()
-        self.text_input.setMaximumHeight(120)
         self.text_input.setMinimumHeight(120)
         self.text_input.installEventFilter(self)
         text_layout.addWidget(self.text_input)
-        
         text_frame.setLayout(text_layout)
-        text_queue_layout.addWidget(text_frame)
+        splitter.addWidget(text_frame)
         
         # Queue on the right
         queue_frame = QFrame()
         queue_layout = QVBoxLayout()
-        queue_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # flex-start alignment
-        
         queue_label = QLabel("TTS Queue:")
         queue_layout.addWidget(queue_label)
-        
         self.queue_listbox = QListWidget()
-        self.queue_listbox.setMaximumHeight(120)
         self.queue_listbox.setMinimumHeight(120)
         queue_layout.addWidget(self.queue_listbox)
-        
-        # Queue control buttons
         queue_btn_layout = QHBoxLayout()
         self.remove_queue_btn = QPushButton("Remove Selected")
         self.remove_queue_btn.clicked.connect(self.remove_selected_from_queue)
         queue_btn_layout.addWidget(self.remove_queue_btn)
-        
         self.clear_queue_btn = QPushButton("Clear All")
         self.clear_queue_btn.clicked.connect(self.clear_queue)
         queue_btn_layout.addWidget(self.clear_queue_btn)
-        
         queue_layout.addLayout(queue_btn_layout)
         queue_frame.setLayout(queue_layout)
-        text_queue_layout.addWidget(queue_frame)
-        
+        splitter.addWidget(queue_frame)
+        # Set initial sizes to 50/50
+        splitter.setSizes([500, 500])
+        text_queue_layout.addWidget(splitter)
         text_queue_group.setLayout(text_queue_layout)
         layout.addWidget(text_queue_group)
         
@@ -317,6 +321,9 @@ class MainWindow(QMainWindow):
         
         central.setLayout(layout)
         self.setCentralWidget(central)
+        
+        # Set phonemizer default to espeak
+        self.phonemizer_combo.setCurrentText("espeak")
         
     def populate_models(self):
         """Populate the model dropdown with available models."""
@@ -359,6 +366,8 @@ class MainWindow(QMainWindow):
             
         # Immediately load the model
         self.load_model()
+        # Focus the text input after selecting model
+        QTimer.singleShot(100, self.focus_text_entry)
         
     def on_cuda_change(self):
         """Handle CUDA setting change."""
@@ -449,46 +458,43 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error", f"Failed to load model: {error_msg}")
         
     def queue_speak(self):
-        """Add text to queue and speak."""
+        """Add text to queue and trigger processing."""
         text = self.text_input.toPlainText().strip()
         if not text:
             QMessageBox.warning(self, "Warning", "Please enter text to synthesize.")
             return
-            
         if not self.synth:
             QMessageBox.warning(self, "Warning", "Please load a model first.")
             return
-            
-        # Add to queue
-        self.tts_queue.append(text)
-        self.update_queue_listbox()
-        
-        # Clear the text input
+        with self.queue_lock:
+            self.tts_queue.append(text)
         self.text_input.clear()
-        
-        # Process queue
-        self.process_queue()
-        
+        QTimer.singleShot(0, self.update_queue_listbox)
+        QTimer.singleShot(0, self.process_queue)
+
     def update_queue_listbox(self):
-        """Update the queue listbox display."""
+        """Update the queue listbox display, showing synthesizing status."""
         self.queue_listbox.clear()
-        for i, text in enumerate(self.tts_queue):
-            self.queue_listbox.addItem(f"{i+1}. {text[:50]}{'...' if len(text) > 50 else ''}")
-            
+        with self.queue_lock:
+            for i, text in enumerate(self.tts_queue):
+                if i == 0 and self._speaking:
+                    display = f"{i+1}. {text[:50]}{'...' if len(text) > 50 else ''} (Synthesizing...)"
+                else:
+                    display = f"{i+1}. {text[:50]}{'...' if len(text) > 50 else ''}"
+                self.queue_listbox.addItem(display)
+
     def process_queue(self):
-        """Process the TTS queue."""
-        if self._speaking or not self.tts_queue:
+        """Process the TTS queue: always speak from the queue, only one at a time."""
+        if self._speaking:
             return
-            
-        text = self.tts_queue.popleft()
-        self.update_queue_listbox()
-        
-        # Get speaker ID if available
+        with self.queue_lock:
+            if not self.tts_queue:
+                return
+            text = self.tts_queue[0]  # Don't pop yet
+        QTimer.singleShot(0, self.update_queue_listbox)
         speaker_id = None
         if self.speaker_group.isVisible() and self.speaker_combo.currentText():
             speaker_id = self.speaker_combo.currentText()
-            
-        # Start synthesis
         self.synthesis_thread = SynthesisThread(
             self.model_combo.currentData()["model_path"],
             self.model_combo.currentData()["config_path"],
@@ -499,40 +505,38 @@ class MainWindow(QMainWindow):
         self.synthesis_thread.finished.connect(self.on_synthesis_finished)
         self.synthesis_thread.error.connect(self.on_synthesis_error)
         self.synthesis_thread.start()
-        
         self._speaking = True
-        self.speak_btn.setEnabled(False)
-        
+        QTimer.singleShot(0, lambda: self.speak_btn.setEnabled(False))
+        QTimer.singleShot(0, self.update_queue_listbox)
+
     def on_synthesis_finished(self, wav):
-        """Handle synthesis completion."""
         self.current_audio = wav
-        
-        # Re-enable button
-        self.speak_btn.setEnabled(True)
-        self.save_btn.setEnabled(True)
         self._speaking = False
-        
-        # Play audio
-        try:
-            play_audio(wav)
-        except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Failed to play audio: {e}")
-            
-        # Process next item in queue
-        if self.tts_queue:
-            self.process_queue()
-            
+        QTimer.singleShot(0, lambda: self.speak_btn.setEnabled(True))
+        QTimer.singleShot(0, lambda: self.save_btn.setEnabled(True))
+        # Remove the first item from the queue (just synthesized)
+        with self.queue_lock:
+            if self.tts_queue:
+                self.tts_queue.popleft()
+        QTimer.singleShot(0, self.update_queue_listbox)
+        def play():
+            try:
+                play_audio(wav)
+            except Exception as e:
+                QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Warning", f"Failed to play audio: {e}"))
+            QTimer.singleShot(0, self.process_queue)
+        threading.Thread(target=play, daemon=True).start()
+
     def on_synthesis_error(self, error_msg):
-        """Handle synthesis error."""
-        # Re-enable button
-        self.speak_btn.setEnabled(True)
         self._speaking = False
-        
-        QMessageBox.critical(self, "Error", f"Synthesis failed: {error_msg}")
-        
-        # Process next item in queue
-        if self.tts_queue:
-            self.process_queue()
+        QTimer.singleShot(0, lambda: self.speak_btn.setEnabled(True))
+        QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"Synthesis failed: {error_msg}"))
+        # Remove the first item from the queue (failed)
+        with self.queue_lock:
+            if self.tts_queue:
+                self.tts_queue.popleft()
+        QTimer.singleShot(0, self.update_queue_listbox)
+        QTimer.singleShot(0, self.process_queue)
             
     def save_wav_file(self):
         """Save audio to WAV file."""
@@ -565,7 +569,8 @@ class MainWindow(QMainWindow):
             
     def clear_queue(self):
         """Clear the entire queue."""
-        self.tts_queue.clear()
+        with self.queue_lock:
+            self.tts_queue.clear()
         self.update_queue_listbox()
         
     def on_phonemizer_change(self, text):
@@ -609,45 +614,136 @@ class MainWindow(QMainWindow):
         dialog = HotkeyInputDialog(self.hotkey, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.hotkey = dialog.hotkey
-            # Re-register hotkey
-            if self._hotkey_handler is not None:
-                try:
-                    keyboard.remove_hotkey(self._hotkey_handler)
-                except Exception:
-                    pass
-            threading.Thread(target=self._start_hotkey_listener, daemon=True).start()
+            self.hotkey_btn.setText(f"Set Hotkey ({self.hotkey})")
+            self.register_global_hotkey(self.hotkey)
+
+    def import_custom_model(self):
+        """Import custom model using original file dialog sequence."""
+        from tts_module.model_manager import get_models_directory
+        import shutil
+        from PyQt6.QtWidgets import QInputDialog
+        model_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Model File",
+            "",
+            "All Supported Models (*.pth *.pt *.ckpt *.safetensors);;PyTorch Model (*.pth);;PyTorch Checkpoint (*.pt);;Checkpoint (*.ckpt);;SafeTensors (*.safetensors)"
+        )
+        if not model_path:
+            return
+        config_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Config .json File",
+            "",
+            "Config JSON (*.json)"
+        )
+        if not config_path:
+            return
+        # Check if config indicates multi-speaker
+        is_multi_speaker = False
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            args = config_data.get("model_args", {})
+            if args.get("use_speaker_embedding", False) or args.get("num_speakers", 1) > 1:
+                is_multi_speaker = True
+        except Exception as e:
+            print(f"Warning: Could not parse config for multi-speaker check: {e}")
+        # Optional: Speaker mapping file
+        speaker_file_path, _ = QFileDialog.getOpenFileName(
+            self, "(Optional) Select Speaker Mapping File (e.g., speakers.pth)",
+            "",
+            "Speaker Mapping (*.pth *.pt *.json *.pkl);;All Files (*)"
+        )
+        if is_multi_speaker and not speaker_file_path:
+            QMessageBox.warning(
+                self,
+                "Speaker Mapping Recommended",
+                "This model appears to be multi-speaker, but you did not select a speaker mapping file.\n\nYou can still import, but speaker names may not be available."
+            )
+        model_name, ok = QInputDialog.getText(self, "Model Name", "Enter a name for your custom model (no spaces):")
+        if not ok or not model_name:
+            return
+        model_name = model_name.replace(" ", "_")
+        models_dir = get_models_directory()
+        dest_folder = os.path.join(models_dir, "custom", model_name)
+        print(f"Importing custom model to: {dest_folder}")
+        os.makedirs(dest_folder, exist_ok=True)
+        dest_model = os.path.join(dest_folder, os.path.basename(model_path))
+        dest_config = os.path.join(dest_folder, os.path.basename(config_path))
+        shutil.copy2(model_path, dest_model)
+        shutil.copy2(config_path, dest_config)
+        if speaker_file_path:
+            dest_speaker = os.path.join(dest_folder, "speakers.pth")
+            shutil.copy2(speaker_file_path, dest_speaker)
+            print(f"✓ Imported speaker mapping file as: {dest_speaker}")
+        QMessageBox.information(self, "Success", f"Custom model imported as '{model_name}'.")
+        self.refresh_models()
 
     def eventFilter(self, obj, event):
         if obj == self.text_input and isinstance(event, QKeyEvent):
             if event.type() == event.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                    # Only add to queue and clear input, never block typing
                     self.queue_speak()
                     return True
         return super().eventFilter(obj, event)
 
-    def _start_hotkey_listener(self):
+    def register_global_hotkey(self, hotkey):
+        """Register a global hotkey using the keyboard library, crash-free."""
+        import keyboard
+        # Remove previous hotkey handler if exists
+        if hasattr(self, '_hotkey_handler') and self._hotkey_handler is not None:
+            try:
+                keyboard.remove_hotkey(self._hotkey_handler)
+            except Exception:
+                pass
+            self._hotkey_handler = None
+        # Validate hotkey before registering
         try:
-            if self._hotkey_handler is not None:
+            # Try to parse the hotkey first
+            keyboard.parse_hotkey(hotkey)
+        except Exception as e:
+            err_msg = str(e)
+            friendly = ""
+            if "not mapped to any known key" in err_msg or "\\x" in err_msg:
+                friendly = ("\n\nThis is usually because single-letter Ctrl+key combinations (like Ctrl+A) "
+                            "are not supported as global hotkeys. Try using a combination with more modifiers, "
+                            "such as Alt+T or Ctrl+/.\n")
+            QMessageBox.warning(self, "Hotkey Error", f"Failed to register global hotkey '{hotkey}':\n{e}{friendly}\nThe error above is from the keyboard library.")
+            return
+        # Register new hotkey with suppress=True
+        try:
+            self._hotkey_handler = keyboard.add_hotkey(hotkey, lambda: QTimer.singleShot(0, self._toggle_window), suppress=True, trigger_on_release=False)
+        except Exception as e:
+            err_msg = str(e)
+            friendly = ""
+            if "not mapped to any known key" in err_msg or "\\x" in err_msg:
+                friendly = ("\n\nThis is usually because single-letter Ctrl+key combinations (like Ctrl+A) "
+                            "are not supported as global hotkeys. Try using a combination with more modifiers, "
+                            "such as Alt+T or Ctrl+/.\n")
+            QMessageBox.warning(self, "Hotkey Error", f"Failed to register global hotkey '{hotkey}':\n{e}{friendly}\nThe error above is from the keyboard library.")
+
+    def _toggle_window(self):
+        """Toggle window visibility with hotkey, robust and crash-free."""
+        try:
+            if self.isMinimized() or not self.isVisible():
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+                self.is_minimized = False
+                # Extra: On Windows, force window to front
                 try:
-                    keyboard.remove_hotkey(self._hotkey_handler)
+                    import platform
+                    if platform.system() == 'Windows':
+                        import ctypes
+                        hwnd = int(self.winId())
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
                 except Exception:
                     pass
-            self._hotkey_handler = keyboard.add_hotkey(self.hotkey, self._toggle_window)
-            keyboard.wait()
+                self.focus_text_entry()
+            else:
+                self.showMinimized()
+                self.is_minimized = True
         except Exception as e:
-            print(f"Hotkey listener failed: {e}")
-            
-    def _toggle_window(self):
-        """Toggle window visibility with hotkey."""
-        if self.isMinimized():
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-            self.focus_text_entry()
-            self.is_minimized = False
-        else:
-            self.showMinimized()
-            self.is_minimized = True
+            print(f"Error toggling window: {e}")
             
     def _hotkey_speak(self):
         """Hotkey action for speaking text."""
@@ -676,9 +772,18 @@ class MainWindow(QMainWindow):
             # Refresh models after successful download
             self.refresh_models()
         
-    def import_custom_model(self):
-        """Import custom model functionality."""
-        dialog = CustomModelImportDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Refresh models after successful import
-            self.refresh_models() 
+    def _hotkey_speak(self):
+        """Hotkey action for speaking text."""
+        if self.synth and not self._speaking:
+            text = self.text_input.toPlainText().strip()
+            if text:
+                self.queue_speak()
+                
+    def _hotkey_save(self):
+        """Hotkey action for saving audio."""
+        if self.current_audio is not None:
+            self.save_wav_file()
+            
+    def _hotkey_focus(self):
+        """Hotkey action for focusing text input."""
+        self.focus_text_entry() 
