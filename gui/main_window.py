@@ -38,12 +38,65 @@ class SynthesisThread(QThread):
                 self.error.emit("Failed to load model")
                 return
                 
-            # Synthesize
-            wav = tts_to_wav(synth, self.text, self.speaker_id)
-            self.finished.emit(wav)
+            # Try synthesis with original text first
+            try:
+                wav = tts_to_wav(synth, self.text, self.speaker_id)
+                self.finished.emit(wav)
+            except Exception as vocab_error:
+                # If it's a vocabulary error, try with preprocessed text
+                if "not found in the vocabulary" in str(vocab_error) or "Character" in str(vocab_error):
+                    print(f"Vocabulary error detected, preprocessing text: '{self.text}'")
+                    processed_text = self.preprocess_text(self.text)
+                    if processed_text != self.text:
+                        print(f"Text preprocessed: '{self.text}' -> '{processed_text}'")
+                    
+                    # Try again with preprocessed text
+                    wav = tts_to_wav(synth, processed_text, self.speaker_id)
+                    self.finished.emit(wav)
+                else:
+                    # If it's not a vocabulary error, re-raise the original exception
+                    raise vocab_error
             
         except Exception as e:
             self.error.emit(str(e))
+    
+    def preprocess_text(self, text):
+        """Preprocess text to handle character vocabulary issues."""
+        # Remove or replace problematic characters
+        import re
+        
+        # Common problematic characters that some models can't handle
+        problematic_chars = {
+            'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+            'à': 'a', 'â': 'a', 'ä': 'a', 'á': 'a',
+            'ì': 'i', 'í': 'i', 'î': 'i', 'ï': 'i',
+            'ò': 'o', 'ó': 'o', 'ô': 'o', 'ö': 'o',
+            'ù': 'u', 'ú': 'u', 'û': 'u', 'ü': 'u',
+            'ñ': 'n', 'ç': 'c',
+            'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+            'À': 'A', 'Â': 'A', 'Ä': 'A', 'Á': 'A',
+            'Ì': 'I', 'Í': 'I', 'Î': 'I', 'Ï': 'I',
+            'Ò': 'O', 'Ó': 'O', 'Ô': 'O', 'Ö': 'O',
+            'Ù': 'U', 'Ú': 'U', 'Û': 'U', 'Ü': 'U',
+            'Ñ': 'N', 'Ç': 'C',
+            '—': '-', '–': '-', '"': '"', '"': '"',
+            ''': "'", ''': "'", '…': '...',
+            '™': '(TM)', '®': '(R)', '©': '(C)',
+            '°': ' degrees', '±': '+/-', '×': 'x', '÷': '/',
+            '≤': '<=', '≥': '>=', '≠': '!=', '≈': '~='
+        }
+        
+        processed = text
+        for char, replacement in problematic_chars.items():
+            processed = processed.replace(char, replacement)
+        
+        # Remove any remaining non-ASCII characters that might cause issues
+        processed = re.sub(r'[^\x00-\x7F]+', '', processed)
+        
+        # Remove extra whitespace
+        processed = ' '.join(processed.split())
+        
+        return processed
 
 class ModelLoadThread(QThread):
     """Thread for loading models to avoid blocking the UI."""
@@ -162,6 +215,7 @@ class MainWindow(QMainWindow):
         self.current_audio = None
         self.synth = None
         self._speaking = False
+        self._processing_audio = False  # Add flag for audio playback
         self._loading_model = False
         self.is_minimized = False
         self.tts_queue = collections.deque()
@@ -473,19 +527,19 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.process_queue)
 
     def update_queue_listbox(self):
-        """Update the queue listbox display, showing synthesizing status."""
+        """Update the queue listbox display, showing speaking status."""
         self.queue_listbox.clear()
         with self.queue_lock:
             for i, text in enumerate(self.tts_queue):
-                if i == 0 and self._speaking:
-                    display = f"{i+1}. {text[:50]}{'...' if len(text) > 50 else ''} (Synthesizing...)"
+                if i == 0 and (self._speaking or self._processing_audio):
+                    display = f"{i+1}. {text[:50]}{'...' if len(text) > 50 else ''} (Speaking...)"
                 else:
                     display = f"{i+1}. {text[:50]}{'...' if len(text) > 50 else ''}"
                 self.queue_listbox.addItem(display)
 
     def process_queue(self):
         """Process the TTS queue: always speak from the queue, only one at a time."""
-        if self._speaking:
+        if self._speaking or self._processing_audio:
             return
         with self.queue_lock:
             if not self.tts_queue:
@@ -512,26 +566,45 @@ class MainWindow(QMainWindow):
     def on_synthesis_finished(self, wav):
         self.current_audio = wav
         self._speaking = False
+        self._processing_audio = True
         QTimer.singleShot(0, lambda: self.speak_btn.setEnabled(True))
         QTimer.singleShot(0, lambda: self.save_btn.setEnabled(True))
-        # Remove the first item from the queue (just synthesized)
-        with self.queue_lock:
-            if self.tts_queue:
-                self.tts_queue.popleft()
         QTimer.singleShot(0, self.update_queue_listbox)
         def play():
             try:
                 play_audio(wav)
             except Exception as e:
                 QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Warning", f"Failed to play audio: {e}"))
+            self._processing_audio = False
+            # Now remove the first item and process the next
+            with self.queue_lock:
+                if self.tts_queue:
+                    self.tts_queue.popleft()
+            QTimer.singleShot(0, self.update_queue_listbox)
             QTimer.singleShot(0, self.process_queue)
         threading.Thread(target=play, daemon=True).start()
 
     def on_synthesis_error(self, error_msg):
         self._speaking = False
+        self._processing_audio = False
         QTimer.singleShot(0, lambda: self.speak_btn.setEnabled(True))
-        QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"Synthesis failed: {error_msg}"))
-        # Remove the first item from the queue (failed)
+        
+        # Check if it's a vocabulary error and show a helpful message
+        if "not found in the vocabulary" in error_msg or "Character" in error_msg:
+            helpful_msg = (
+                f"Synthesis failed due to character vocabulary issues:\n\n"
+                f"Error: {error_msg}\n\n"
+                f"Some models have limited character sets and cannot handle:\n"
+                f"• Special characters (é, ñ, ç, etc.)\n"
+                f"• Symbols (™, ©, —, etc.)\n"
+                f"• Non-English characters\n\n"
+                f"Try using only basic English letters, numbers, and common punctuation."
+            )
+            QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Character Vocabulary Error", helpful_msg))
+        else:
+            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"Synthesis failed: {error_msg}"))
+        
+        # Remove the first item from the queue (failed) only now
         with self.queue_lock:
             if self.tts_queue:
                 self.tts_queue.popleft()
@@ -767,10 +840,34 @@ class MainWindow(QMainWindow):
         
     def open_online_model_dialog(self):
         """Open online model download dialog."""
-        dialog = OnlineModelDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Refresh models after successful download
-            self.refresh_models()
+        # Show warning about model compatibility
+        warning_msg = (
+            "⚠️  Model Download Warning ⚠️\n\n"
+            "Some models may not work properly due to:\n"
+            "• Incompatible model versions\n"
+            "• Missing dependencies\n"
+            "• Corrupted downloads\n"
+            "• Outdated model formats\n\n"
+            "If a model fails to download or load:\n"
+            "• Try downloading a different model\n"
+            "• Check the console for error details\n"
+            "• Some models may require specific TTS versions\n\n"
+            "The download will attempt to use the most reliable method available."
+        )
+        
+        reply = QMessageBox.question(
+            self, 
+            "Model Download Warning", 
+            warning_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            dialog = OnlineModelDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                # Refresh models after successful download
+                self.refresh_models()
         
     def _hotkey_speak(self):
         """Hotkey action for speaking text."""

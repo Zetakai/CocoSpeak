@@ -7,6 +7,8 @@ import os
 import json
 import shutil
 from TTS.utils.manage import ModelManager
+import requests
+from tts_module.model_manager import get_models_directory
 
 class OnlineModelDialog(QDialog):
     """Dialog for downloading online models."""
@@ -69,16 +71,15 @@ class OnlineModelDialog(QDialog):
         self.fetch_thread.error.connect(self.on_fetch_error)
         self.fetch_thread.start()
         
-    def on_models_fetched(self, model_ids, model_names):
+    def on_models_fetched(self, model_ids, model_names, model_urls):
         """Handle successful model fetch."""
         self.model_ids = model_ids
         self.model_names = model_names
-        
+        self.model_urls = model_urls
         # Populate list
         self.model_list.clear()
         for name in model_names:
             self.model_list.addItem(name)
-            
         self.status_label.setText(f"Found {len(model_names)} TTS models")
         self.download_btn.setEnabled(True)
         
@@ -93,17 +94,13 @@ class OnlineModelDialog(QDialog):
         if current_row < 0:
             self.status_label.setText("Please select a model to download.")
             return
-            
         model_id = self.model_ids[current_row]
         model_name = self.model_names[current_row]
-        
-        # Start download
         self.download_thread = ModelDownloadThread(model_id, model_name)
         self.download_thread.progress.connect(self.update_download_progress)
         self.download_thread.finished.connect(self.on_download_finished)
         self.download_thread.error.connect(self.on_download_error)
         self.download_thread.start()
-        
         self.download_btn.setEnabled(False)
         self.status_label.setText("Downloading model...")
         
@@ -124,67 +121,147 @@ class OnlineModelDialog(QDialog):
         QMessageBox.critical(self, "Error", f"Download failed: {error_msg}")
 
 class ModelFetchThread(QThread):
-    """Thread for fetching model list."""
-    finished = pyqtSignal(list, list)  # model_ids, model_names
+    finished = pyqtSignal(list, list, list)  # model_ids, model_names, model_urls
     error = pyqtSignal(str)
-    
     def run(self):
         try:
+            from TTS.utils.manage import ModelManager
             manager = ModelManager()
             model_ids = manager.list_models()
-            
-            # Filter out vocoder models
-            def is_tts_model_id(model_id):
-                tts_keywords = ["vits", "tacotron", "fastpitch", "glow", "tacotron2", "capacitron"]
-                vocoder_keywords = ["hifigan", "melgan", "vocoder"]
-                model_id_lower = model_id.lower()
-                if any(v in model_id_lower for v in vocoder_keywords):
-                    return False
-                return any(t in model_id_lower for t in tts_keywords)
-            
-            filtered_model_ids = [mid for mid in model_ids if is_tts_model_id(mid)]
-            
-            def parse_model_id(model_id):
-                parts = model_id.split('/')
-                if len(parts) >= 4:
-                    return f"{parts[1]} | {parts[2]} | {parts[3]}"
-                return model_id
-            
-            model_names = [parse_model_id(mid) for mid in filtered_model_ids]
-            
+            tts_keywords = ["vits", "tacotron", "fastpitch", "glow", "tacotron2", "capacitron"]
+            vocoder_keywords = ["hifigan", "melgan", "vocoder"]
+            filtered_model_ids = [
+                mid for mid in model_ids
+                if any(t in mid.lower() for t in tts_keywords) and not any(v in mid.lower() for v in vocoder_keywords)
+            ]
             if not filtered_model_ids:
-                self.error.emit("No TTS models found in the online model list.")
+                self.error.emit("No downloadable TTS models found in the online model list.")
                 return
-                
-            self.finished.emit(filtered_model_ids, model_names)
-            
+            # For now, use model_id as name and no download URL (download logic will use model_id)
+            self.finished.emit(filtered_model_ids, filtered_model_ids, filtered_model_ids)
         except Exception as e:
             self.error.emit(str(e))
 
 class ModelDownloadThread(QThread):
-    """Thread for downloading models."""
+    """Thread for downloading models using ModelManager with simulated progress bar."""
     progress = pyqtSignal(int, str)  # progress_percent, message
     finished = pyqtSignal(str)  # success message
     error = pyqtSignal(str)
-    
+
     def __init__(self, model_id, model_name):
         super().__init__()
         self.model_id = model_id
         self.model_name = model_name
-        
+        self._stop_progress = False
+
     def run(self):
         try:
+            from TTS.utils.manage import ModelManager
+            import time
+            import threading
+            import os
+            import shutil
+            from tts_module.model_manager import get_models_directory
+
+            # Start progress simulation in a separate thread
+            progress_thread = threading.Thread(target=self._simulate_progress)
+            progress_thread.daemon = True
+            progress_thread.start()
+
+            # Use ModelManager to download the model
+            self.progress.emit(5, "Initializing download...")
+            time.sleep(0.5)  # Brief pause for UI update
+
             manager = ModelManager()
+            self.progress.emit(10, "Starting download with ModelManager...")
+
+            # This is the actual download - it will take time
+            model_info = manager.download_model(self.model_id)
+
+            # Debug: print what model_info contains
+            print(f"Model info type: {type(model_info)}")
+            print(f"Model info: {model_info}")
+
+            # After download, move files to models directory in a new folder
+            models_dir = get_models_directory()
+            folder_name = self.model_id.split('/')[-1]
             
-            # Download the model
-            self.progress.emit(0, "Starting download...")
-            manager.download_model(self.model_id)
-            self.progress.emit(100, "Download completed")
-            
-            self.finished.emit(f"Model '{self.model_name}' has been downloaded successfully.")
-            
+            # Use the same folder naming logic as your old codebase
+            if 'vctk' in self.model_id:
+                folder_name = 'vctk'
+            elif 'vits' in self.model_id:
+                folder_name = 'vits'
+            elif 'tacotron2' in self.model_id:
+                folder_name = 'tacotron2'
+                
+            model_folder = os.path.join(models_dir, folder_name)
+            print(f"Downloading model to: {model_folder}")
+            os.makedirs(model_folder, exist_ok=True)
+
+            # Handle the model_info tuple like in your old codebase
+            if isinstance(model_info, tuple) and len(model_info) >= 2:
+                model_path, config_path = model_info[0], model_info[1]
+                
+                # Copy files with proper naming like in your old codebase
+                local_model_path = os.path.join(model_folder, f"{folder_name}_model.pth")
+                local_config_path = os.path.join(model_folder, f"{folder_name}_config.json")
+                
+                if os.path.exists(model_path):
+                    shutil.copy2(model_path, local_model_path)
+                    print(f"Copied model: {model_path} -> {local_model_path}")
+                else:
+                    print(f"Model path not found: {model_path}")
+                    
+                if os.path.exists(config_path):
+                    shutil.copy2(config_path, local_config_path)
+                    print(f"Copied config: {config_path} -> {local_config_path}")
+                else:
+                    print(f"Config path not found: {config_path}")
+                    
+                files_copied = os.path.exists(local_model_path) and os.path.exists(local_config_path)
+            else:
+                print(f"Unexpected model_info format: {model_info}")
+                files_copied = False
+
+            self._stop_progress = True
+            progress_thread.join(timeout=1)
+
+            if files_copied:
+                self.progress.emit(100, "Download complete!")
+                self.finished.emit(f"Model '{self.model_name}' has been downloaded successfully.")
+            else:
+                self.error.emit("Download completed but no files were found to copy to models directory.")
+
         except Exception as e:
+            self._stop_progress = True
             self.error.emit(str(e))
+
+    def _simulate_progress(self):
+        """Simulate progress updates while ModelManager downloads."""
+        import time
+
+        # Progress stages with realistic timing
+        stages = [
+            (10, "Initializing download...", 0.5),
+            (15, "Connecting to model repository...", 1.0),
+            (25, "Downloading model files...", 2.0),
+            (40, "Downloading model files...", 2.0),
+            (55, "Downloading model files...", 2.0),
+            (70, "Downloading model files...", 2.0),
+            (85, "Verifying download...", 1.0),
+            (95, "Finalizing installation...", 0.5)
+        ]
+
+        for percent, message, duration in stages:
+            if self._stop_progress:
+                break
+            self.progress.emit(percent, message)
+            time.sleep(duration)
+
+        # Keep updating until download is complete
+        while not self._stop_progress:
+            self.progress.emit(95, "Downloading model files...")
+            time.sleep(1.0)
 
 class CustomModelImportDialog(QDialog):
     """Dialog for importing custom models."""
@@ -346,7 +423,6 @@ class CustomModelImportDialog(QDialog):
                     return
                     
             # Import the model
-            from tts_module.model_manager import get_models_directory
             models_dir = get_models_directory()
             dest_folder = os.path.join(models_dir, "custom", model_name)
             

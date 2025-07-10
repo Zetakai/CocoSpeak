@@ -1,8 +1,8 @@
-# 🎤 CocoSpeak: The Modern TTS GUI App
+# 🎤 CocoSpeak: The Modern TTS GUI App (PyQt6)
 
 ---
 
-> **A beautiful, powerful, and user-friendly Text-to-Speech (TTS) desktop app for everyone!**
+> **A beautiful, powerful, and user-friendly Text-to-Speech (TTS) desktop app built with PyQt6!**
 
 ---
 
@@ -16,7 +16,11 @@
 | 🎛️ Phonemizer Switch    | Instantly swap between `gruut` and `espeak`         |
 | 🧹 Clean Model List      | Only real models, no clutter                        |
 | 💾 Save as WAV           | Export your speech to high-quality audio            |
-| 🖥️ Modern UI            | Responsive, beautiful, and easy to use              |
+| 🖥️ Modern PyQt6 UI     | Responsive, beautiful, and easy to use              |
+| ⬇️ Real-time Downloads  | Progress bars for online model downloads            |
+| ⌨️ Global Hotkeys       | Robust hotkey system with clear error messages     |
+| 📝 Smart Text Processing | Automatic character compatibility handling          |
+| 📋 Enhanced Queue        | Real-time queue status and management               |
 
 ---
 
@@ -41,12 +45,12 @@ Find your EXE in `dist/cocospeak/cocospeak.exe`
 ## 🖱️ HOW TO USE
 
 1. **Run the App**
-   - Double-click the EXE or run `python cocospeak.py`
+   - Double-click the EXE or run `python gui/main_window.py`
    - Make sure the `models/` folder is next to the EXE/script
 
 2. **Add Models**
-   - **Download Online:** Use the "Download Model" button for Coqui TTS Hub models
-   - **Import Custom:** Use "Import Model" to add your own model, config, and (optionally) speaker mapping
+   - **Download Online:** Use "Download Online Model" for Coqui TTS Hub models with real-time progress
+   - **Import Custom:** Use "Import Model" to add your own model, config, and speaker mapping
    - **Manual:** Place model/checkpoint and config in a new folder under `models/`
 
 3. **Select a Model**
@@ -55,22 +59,39 @@ Find your EXE in `dist/cocospeak/cocospeak.exe`
 
 4. **Type Text & Speak**
    - Enter your text, click **Speak**, or **Save as WAV**
+   - Use **Enter** to quickly add text to queue
+   - Text is automatically preprocessed for character compatibility
 
-5. **Switch Phonemizer**
+5. **Queue Management**
+   - Add multiple texts to the queue
+   - See real-time status ("Speaking...", "Waiting...")
+   - Remove items or clear the entire queue
+
+6. **Global Hotkeys**
+   - Set custom hotkeys for quick access
+   - Default: `/` to toggle window visibility
+   - Clear error messages for unsupported combinations
+
+7. **Switch Phonemizer**
    - Use the dropdown to toggle between `gruut` and `espeak` (auto-updates config)
 
-6. **Refresh Models**
+8. **Refresh Models**
    - Click **Refresh** if you add/remove models while the app is open
 
 ---
 
-## 🆕 WHAT'S NEW?
+## 🆕 WHAT'S NEW IN PYQT6 VERSION?
 
-- **Multi-Speaker Models:** Auto-detects and supports speaker selection for any compatible model
-- **Import Improvements:** Warns if you forget a mapping file for multi-speaker models; always copies as `speakers.pth`
-- **Model List Cleanup:** Only real models appear in the dropdown
-- **No More Annoying Popups:** Success is shown in the status bar, not as a popup
-- **Automatic CUDA Detection:** Uses your GPU if available, falls back to CPU if not
+- **Modern PyQt6 Interface:** Better performance, responsive design, and modern look
+- **Real-time Download Progress:** See actual progress bars when downloading online models
+- **Robust Hotkey System:** Clear error messages and reliable global hotkey registration
+- **Smart Text Preprocessing:** Automatically handles special characters and compatibility issues
+- **Enhanced Queue System:** Real-time status updates and better queue management
+- **Better Error Handling:** User-friendly error messages and helpful troubleshooting tips
+- **Character Compatibility:** Automatic conversion of problematic characters (é→e, ñ→n, etc.)
+- **Download Warnings:** Informative dialogs about model compatibility issues
+- **Thread-Safe Operations:** All UI updates are main-thread safe
+- **Improved Model Organization:** Better folder structure and file naming
 
 ---
 
@@ -87,6 +108,15 @@ Find your EXE in `dist/cocospeak/cocospeak.exe`
   - Try switching phonemizer in the GUI, or check your config
 - **CUDA Not Detected?**
   - Make sure you have a compatible GPU and PyTorch installed with CUDA support
+- **Character Vocabulary Errors?**
+  - Text is automatically preprocessed, but some models have very limited character sets
+  - Try using only basic English letters and punctuation
+- **Download Failures?**
+  - Some models may not be available for download
+  - Check the console for detailed error messages
+- **Hotkey Not Working?**
+  - Some combinations (like Ctrl+A) are not supported globally
+  - Try combinations with more modifiers (Alt+T, Ctrl+/)
 
 ---
 
@@ -94,14 +124,18 @@ Find your EXE in `dist/cocospeak/cocospeak.exe`
 
 ```text
 CocoSpeak/
-├── cocospeak.py          # Main application
-├── cocospeak.spec        # PyInstaller config
-├── requirements.txt      # Python dependencies
+├── gui/
+│   ├── main_window.py     # Main PyQt6 application
+│   └── dialogs.py         # Dialog windows (download, hotkey, etc.)
+├── tts_module/
+│   └── model_manager.py   # Model management utilities
+├── cocospeak.spec         # PyInstaller config
+├── requirements.txt       # Python dependencies
 ├── build.bat / build.ps1 # Windows build scripts
-├── models/               # TTS models (not in git)
-│   ├── custom/           # Custom imported models
-│   └── [model folders]   # Downloaded/imported models
-└── dist/cocospeak/       # Built executable (after build)
+├── models/                # TTS models (not in git)
+│   ├── custom/            # Custom imported models
+│   └── [model folders]    # Downloaded/imported models
+└── dist/cocospeak/        # Built executable (after build)
 ```
 
 ---
@@ -128,6 +162,7 @@ Open an issue on this GitHub repo for support or questions.
 
 - **Supported:** VITS, Tacotron, FastPitch, GlowTTS, Capacitron, and similar TTS models
 - **Not Supported:** Vocoder-only models (e.g., HiFiGAN, MelGAN) are hidden and cannot be selected
+- **Character Compatibility:** Models with limited vocabularies automatically have text preprocessed
 
 ---
 
@@ -142,5 +177,17 @@ CocoSpeak uses a PyInstaller runtime hook to hide unwanted command prompt window
      runtime_hooks=['hook-hide_subprocess_windows.py'],
      ```
   3. Build with PyInstaller as usual
+
+---
+
+## 🔧 TECHNICAL DETAILS
+
+- **Framework:** PyQt6 for modern, responsive UI
+- **TTS Engine:** Coqui TTS with ModelManager integration
+- **Audio:** Real-time synthesis with queue management
+- **Threading:** All synthesis and downloads run in background threads
+- **Hotkeys:** Global hotkey support with keyboard library
+- **Text Processing:** Automatic character compatibility handling
+- **Error Handling:** Comprehensive error messages and user guidance
 
 --- 

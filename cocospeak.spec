@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['cocospeak.py'],
+    ['app.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -11,7 +11,12 @@ a = Analysis(
         ('venv/Lib/site-packages/trainer', 'trainer'),
         ('venv/Lib/site-packages/jamo', 'jamo')
     ],
-    hiddenimports=['TTS', 'gruut', 'trainer', 'inflect', 'typeguard', 'jamo', 'TTS.tts.utils.text', 'TTS.tts.utils.text.cleaners', 'TTS.tts.utils.text.english.number_norm'],
+    hiddenimports=[
+        'TTS', 'gruut', 'trainer', 'inflect', 'typeguard', 'jamo', 
+        'TTS.tts.utils.text', 'TTS.tts.utils.text.cleaners', 
+        'TTS.tts.utils.text.english.number_norm',
+        'keyboard', 'threading', 'collections'
+    ],
     hookspath=['.'],
     hooksconfig={},
     runtime_hooks=['hook-hide_subprocess_windows.py'],
