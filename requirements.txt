@@ -11,7 +11,7 @@ numpy
 scipy
 
 # GUI Framework
-# tkinter (removed)
+PyQt6
 
 # Audio Processing
 torch==2.5.0+cu121
