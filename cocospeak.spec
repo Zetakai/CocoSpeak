@@ -9,13 +9,22 @@ a = Analysis(
         ('venv/Lib/site-packages/TTS', 'TTS'),
         ('venv/Lib/site-packages/gruut', 'gruut'),
         ('venv/Lib/site-packages/trainer', 'trainer'),
-        ('venv/Lib/site-packages/jamo', 'jamo')
+        ('venv/Lib/site-packages/jamo', 'jamo'),
+        ('gui', 'gui'),
+        ('tts_module', 'tts_module'),
+        ('utils', 'utils')
     ],
     hiddenimports=[
         'TTS', 'gruut', 'trainer', 'inflect', 'typeguard', 'jamo', 
         'TTS.tts.utils.text', 'TTS.tts.utils.text.cleaners', 
         'TTS.tts.utils.text.english.number_norm',
-        'keyboard', 'threading', 'collections'
+        'keyboard', 'threading', 'collections', 'pysbd',
+        'TTS.utils.synthesizer', 'TTS.utils.manage', 'TTS.tts.utils.audio',
+        'TTS.tts.utils.helpers', 'TTS.tts.utils.speakers', 'TTS.tts.utils.text.tokenizer',
+        'sounddevice', 'soundfile', 'numpy', 'torch', 'requests',
+        'platform', 'json', 'shutil', 'datetime', 're', 'ctypes',
+        'tts_module.audio', 'tts_module.synthesis', 'tts_module.model_manager',
+        'gui.main_window', 'gui.dialogs', 'utils.paths'
     ],
     hookspath=['.'],
     hooksconfig={},
